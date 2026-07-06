@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Mod xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="https://gitee.com/SC-SPM/SurvivalcraftApi/raw/SCAPI1.9/Survivalcraft/Content/Assets/Database.xsd">
+  <EntityTemplate Name="Player" Guid="4be6c1c5-d65d-4537-8a8b-a391969e6dc2">
+    <!-- 替换 HumanModel 的类为 GltfPlayerModel -->
+    <MemberComponentTemplate Name="HumanModel" Guid="2ab30524-f17b-471e-8946-23061b62a569">
+      <Parameter Name="Class" Guid="faa8d414-a441-4763-9d54-99713870438e" Value="Game.ComponentGltfPlayerModel" Type="string" />
+      <Parameter Name="AnimationConfigPath" Guid="3390ca27-0054-407b-b59f-5d5343deb509" Value="Animations/GltfPlayer" Type="string" />
+      <Parameter Name="BaseInhandItemOffset" Guid="f31e5290-d3ce-428e-bc71-6f57bafae6cc" Value="-0.02, 0.1, 0" Type="Vector3" />
+      <Parameter Name="BaseInhandItemRotation" Guid="e904386c-bdf5-4a3f-ac2a-fdefcfe3e2dc" Value="90, 0, 0" Type="Vector3" />
+    </MemberComponentTemplate>
+    <!-- 替换 ComponentOuterClothingModel 的 DisableAnimation 和 DisableDrawing 为 True -->
+    <MemberComponentTemplate Name="ComponentOuterClothingModel" Guid="82c9ee8a-5ca2-4c76-8629-1a38e2ae75c6">
+      <Parameter Name="DisableAnimation" Guid="02345b51-4d28-4503-aef0-b1ecc2dc01cb" Value="True" Type="bool" />
+      <Parameter Name="DisableDrawing" Guid="ebbb470a-56a6-4c27-b30f-c00a52942a11" Value="True" Type="bool" />
+    </MemberComponentTemplate>
+  </EntityTemplate>
+  <!-- 替换 MalePlayer 的模型和默认纹理 -->
+  <Parameter Name="ModelName" Guid="74de5cab-670e-4b90-ab35-8bb9c569d83e" new-Value="Models/GltfPlayer" Type="string" />
+  <Parameter Name="ModelNameForClothing" Guid="ea03f385-5e39-4ad3-a51b-126231ebad45" new-Value="Models/HumanMale" Type="string" />
+  <Parameter Name="TextureOverride" Guid="1b0a2639-c2df-4eda-8beb-2bd51e21c16a" new-Value="" Type="string" />
+  <!-- 替换 FemalePlayer 的模型 -->
+  <Parameter Name="ModelName" Guid="d5347e2f-8cab-4df8-a8b0-29aea1c69c18" new-Value="Models/GltfPlayer" Type="string" />
+  <Parameter Name="ModelNameForClothing" Guid="6c854005-56a4-4dcf-9c80-6200fdd71137" new-Value="Models/HumanFemale" Type="string" />
+  <Parameter Name="TextureOverride" Guid="60e811db-aca9-412a-b247-fc212de2efeb" new-Value="" Type="string" />
+</Mod>

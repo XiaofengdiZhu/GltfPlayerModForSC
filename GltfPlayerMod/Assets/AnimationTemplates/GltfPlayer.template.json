@@ -1,0 +1,32 @@
+{
+    "name": "GltfPlayer",
+    "layers": {
+        "Base": {
+            "index": 0,
+            "blendMode": "Override"
+        },
+        "Activity": {
+            "index": 1,
+            "blendMode": "Override",
+            "boneMask": [ "spine_01" ]
+        },
+        "Ride": {
+            "index": 2,
+            "blendMode": "Override",
+            "boneMask": [ "pelvis" ],
+            "boneMaskExclude": [ "spine_01" ]
+        }
+    },
+    "stateTracks": {
+        "Activity": {
+            "type": "Enum",
+            "defaultValue": "None",
+            "enumValues": [ "None", "Attack", "Aim" ]
+        },
+        "Ride": {
+            "type": "Enum",
+            "defaultValue": "None",
+            "enumValues": [ "None", "Riding" ]
+        }
+    }
+}

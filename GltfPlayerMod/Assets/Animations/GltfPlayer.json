@@ -1,0 +1,227 @@
+{
+  "template": "GltfPlayer",
+  "animations": {
+    "death": {
+      "source": "Death01",
+      "loop": false,
+      "preservePose": true,
+      "blendDuration": 0.2
+    },
+    "sleep": {
+      "source": "Sleeping",
+      "loop": true,
+      "blendDuration": 0.5
+    },
+    "swim": {
+      "source": "Swim_Fwd_Loop",
+      "loop": true,
+      "blendDuration": 0.5
+    },
+    "swim_idle": {
+      "source": "Swim_Idle_Loop",
+      "loop": true,
+      "blendDuration": 0.5
+    },
+    "fly": {
+      "source": "Levitate Idle",
+      "loop": true,
+      "blendDuration": 0.3
+    },
+    "crawl": {
+      "source": "Crawl",
+      "loop": true,
+      "blendDuration": 0.25,
+      "rootBoneRotation": [90, 0, 0],
+      "rootBoneTranslation": [0, 0.5, 0]
+    },
+    "jump": {
+      "source": "Jump_Loop",
+      "loop": true,
+      "blendDuration": 0.2
+    },
+    "crouch_idle": {
+      "source": "Crouch_Idle_Loop",
+      "loop": true,
+      "blendDuration": 0.3
+    },
+    "crouch_walk": {
+      "source": "Crouch_Fwd_Loop",
+      "loop": true,
+      "blendDuration": 0.25
+    },
+    "run": {
+      "source": "Sprint_Loop",
+      "loop": true,
+      "blendDuration": 0.25
+    },
+    "walk": {
+      "source": "Walk_Loop",
+      "loop": true,
+      "blendDuration": 0.25
+    },
+    "idle": {
+      "source": "Idle_Loop",
+      "loop": true,
+      "blendDuration": 0.3
+    },
+    "chop": {
+      "source": "TreeChopping_Loop",
+      "loop": true,
+      "blendDuration": 0.2
+    },
+    "ride_boat": {
+      "source": "Meditate",
+      "loop": true,
+      "blendDuration": 0.5,
+      "rootBoneTranslation": [0, 0.15, 0]
+    },
+    "ride": {
+      "source": "Power Up",
+      "loop": true,
+      "blendDuration": 0.5,
+      "rootBoneTranslation": [0, 0.15, 0]
+    }
+  },
+  "states": {
+    "base": {
+      "layer": "Base",
+      "rules": [
+        {
+          "condition": "[IsDead] == true",
+          "animation": "death"
+        },
+        {
+          "condition": "[IsRiding]",
+          "animation": "idle"
+        },
+        {
+          "condition": "[LieDownFactor] > 0",
+          "animation": "sleep"
+        },
+        {
+          "condition": "[IsInWater]",
+          "rules": [
+            {
+              "condition": "[SpeedAbs] > 0.4",
+              "animation": {
+                "source": "swim",
+                "speed": "[Speed]"
+              }
+            },
+            {
+              "condition": "true",
+              "animation": "swim_idle"
+            }
+          ]
+        },
+        {
+          "condition": "![IsOnGround]",
+          "rules":[
+            {
+              "condition": "[IsFlying]",
+              "animation": "fly"
+            },
+            {
+              "condition": "[IsOnLadder] > 0.0",
+              "animation": {
+                "source": "crawl",
+                "speed": "[VelocityY] * 1.5"
+              }
+            },
+            {
+              "condition": "true",
+              "animation": "jump"
+            }
+          ]
+        },
+        {
+          "condition": "[CrouchFactor] > 0.0",
+          "rules": [
+            {
+              "condition": "[SpeedAbs] > 0.2",
+              "animation": {
+                "source": "crouch_walk",
+                "speed": "[Speed] * 1.25"
+              }
+            },
+            {
+              "condition": "true",
+              "animation": "crouch_idle"
+            }
+          ]
+        },
+        {
+          "condition": "[SpeedAbs] > [WalkSpeed] * 0.8",
+          "animation": {
+            "source": "run",
+            "speed": "[Speed] * 0.2"
+          }
+        },
+        {
+          "condition": "[SpeedAbs] > 0.2",
+          "animation": {
+            "source": "walk",
+            "speed": "[Speed]"
+          }
+        },
+        {
+          "condition": "true",
+          "animation": "idle"
+        }
+      ]
+    },
+    "activity": {
+      "layer": "Activity",
+      "rules": [
+        {
+          "condition": "[PokingPhase] > 0.0",
+          "animation": "chop"
+        },
+        {
+          "condition": "true",
+          "animation": null
+        }
+      ]
+    },
+    "ride": {
+      "layer": "Ride",
+      "rules": [
+        {
+          "condition": "[IsBoat]",
+          "animation": "ride_boat"
+        },
+        {
+          "condition": "[IsRiding]",
+          "animation": "ride"
+        },
+        {
+          "condition": "true",
+          "animation": null
+        }
+      ]
+    }
+  },
+  "boneAliases": {
+    "Body": "spine_03",
+    "Head": "head",
+    "Hand1": "hand_l",
+    "Hand2": "hand_r",
+    "Leg1": "thigh_l",
+    "Leg2": "thigh_r"
+  },
+  "parameters": {
+    "IsDead": false,
+    "IsRiding": false,
+    "IsInWater": false,
+    "IsOnGround": true,
+    "IsFlying": false,
+    "IsOnLadder": false,
+    "VelocityY": 0.0,
+    "CrouchFactor": 0.0,
+    "Speed": 0.0,
+    "SpeedAbs": 0.0,
+    "WalkSpeed": 3.1,
+    "PokingPhase": 0.0,
+    "IsBoat": false
+  }
+}
