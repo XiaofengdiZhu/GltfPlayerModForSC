@@ -12,8 +12,8 @@
       <Parameter Name="DisableAnimation" Guid="02345b51-4d28-4503-aef0-b1ecc2dc01cb" Value="True" Type="bool" />
       <Parameter Name="DisableDrawing" Guid="ebbb470a-56a6-4c27-b30f-c00a52942a11" Value="True" Type="bool" />
     </MemberComponentTemplate>
-    <!-- 添加跳跃相位状态机参与者 -->
-    <MemberComponentTemplate Name="GltfPlayerJumpController" Guid="ce93a0bc-897b-4f15-a611-4bf96c63cca9" InheritanceParent="d7d53fcb-36ec-4849-ad44-9ecbcd89fc83" />
+    <!-- 添加 Base 层相位机参与者（跳跃+起床） -->
+    <MemberComponentTemplate Name="GltfPlayerBaseController" Guid="ce93a0bc-897b-4f15-a611-4bf96c63cca9" InheritanceParent="d7d53fcb-36ec-4849-ad44-9ecbcd89fc83" />
   </EntityTemplate>
   <!-- 替换 MalePlayer 的模型和默认纹理 -->
   <Parameter Name="ModelName" Guid="74de5cab-670e-4b90-ab35-8bb9c569d83e" new-Value="Models/GltfPlayer" Type="string" />
@@ -24,8 +24,8 @@
   <Parameter Name="ModelNameForClothing" Guid="6c854005-56a4-4dcf-9c80-6200fdd71137" new-Value="Models/HumanFemale" Type="string" />
   <Parameter Name="TextureOverride" Guid="60e811db-aca9-412a-b247-fc212de2efeb" new-Value="" Type="string" />
   <Folder Name="Gameplay" Guid="d3d4b692-acc9-4128-9b99-a5acf1de1fbb">
-    <ComponentTemplate Name="ComponentGltfPlayerJumpController" Guid="d7d53fcb-36ec-4849-ad44-9ecbcd89fc83" InheritanceParent="b05700ed-7e4e-4679-98f5-b597f421496b">
-      <Parameter Name="Class" Guid="3eb4108d-a77a-4b07-940f-0b96518eed5e" Value="Game.ComponentGltfPlayerJumpController" Type="string"/>
+    <ComponentTemplate Name="ComponentGltfPlayerBaseController" Guid="d7d53fcb-36ec-4849-ad44-9ecbcd89fc83" InheritanceParent="b05700ed-7e4e-4679-98f5-b597f421496b">
+      <Parameter Name="Class" Guid="3eb4108d-a77a-4b07-940f-0b96518eed5e" Value="Game.ComponentGltfPlayerBaseController" Type="string"/>
     </ComponentTemplate>
   </Folder>
 </Mod>

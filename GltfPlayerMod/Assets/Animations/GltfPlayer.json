@@ -12,6 +12,13 @@
       "loop": true,
       "blendDuration": 0.5
     },
+    "wakeup": {
+      "source": "LayToIdle",
+      "loop": false,
+      "blendDuration": 0.25,
+      "preservePose": true,
+      "onComplete": { "type": "trigger", "name": "WakeUpComplete" }
+    },
     "swim": {
       "source": "Swim_Fwd_Loop",
       "loop": true,
@@ -112,6 +119,10 @@
         {
           "condition": "[IsRiding]",
           "animation": "idle"
+        },
+        {
+          "condition": "[IsWakingUp] == true",
+          "animation": "wakeup"
         },
         {
           "condition": "[LieDownFactor] > 0",
