@@ -16,10 +16,10 @@ namespace Game {
     ///
     /// 跳跃相位状态机（JumpPhase：Ground/Start/Loop/Land，Jump_Start/Jump_Loop/Jump_Land 三段式）：
     /// 滞空动画分起跳、滞空循环、落地三段，是带历史依赖的状态序列
-    /// （Start 播完才进 Loop、仅 Loop 后播 Land），纯条件规则无法表达。
+    /// （Start 播完才进 Loop、净下落超阈值才播 Land），纯条件规则无法表达。
     /// 此组件维护 JumpPhase 参数写入控制器，配合 JSON 规则与动画完成事件驱动转换：
     /// - 离地边沿：上升（VelocityY > 阈值）→ Start；下降（走下悬崖等掉落）→ Loop
-    /// - 落地边沿：Loop→Land（仅 Loop 后播 Land）；Start→Ground（短跳不播 Land）
+    /// - 落地边沿：净下落 &gt; 1.8m→Land；否则 Ground（同高/短掉落不播 Land）
     /// - Jump_Start 播完（onComplete trigger "JumpStartComplete"）→ Loop
     /// - Jump_Land 播完（onComplete trigger "JumpLandComplete"）→ Ground
     /// - 进入水/飞行/梯子/骑乘/死亡 → 重置 Ground，避免落地误播 Land
@@ -52,6 +52,12 @@ namespace Game {
 
         // 起跳判定阈值：离地瞬间垂直速度超过此值视为主动起跳（上升），否则视为掉落
         private const float JumpStartVelocityThreshold = 0.5f;
+
+        // 落地播 Land 所需的最小净下落高度（米）：落地高度比起跳/下落时低超过此值才播 Land
+        private const float JumpLandMinDropHeight = 1.8f;
+
+        // 本次滞空起跳/下落瞬间的 Y 高度，落地时与当前高度比较判定是否播 Land
+        private float m_takeoffY;
 
         // 起床中标志（写入控制器 IsWakingUp 参数）；上一帧是否在睡（用于 IsSleeping 下降沿检测）
         private bool m_isWakingUp;
@@ -114,15 +120,17 @@ namespace Game {
                 m_jumpPhase = JumpPhaseGround;
             }
             else if (onGround) {
-                // 刚落地：仅 Loop 相位后播 Land；Start 直接落地（短跳）不播 Land
+                // 刚落地：净下落高度（起跳/下落时 Y - 当前 Y）超过 JumpLandMinDropHeight 才播 Land
                 if (!m_prevOnGround) {
-                    m_jumpPhase = (m_jumpPhase == JumpPhaseLoop) ? JumpPhaseLand : JumpPhaseGround;
+                    float dropped = m_takeoffY - componentBody.Position.Y;
+                    m_jumpPhase = (dropped > JumpLandMinDropHeight) ? JumpPhaseLand : JumpPhaseGround;
                 }
             }
             else {
                 // 刚离地：上升=主动起跳→Start；下降=掉落→Loop。
                 // 持续空中时 Start→Loop 由 Jump_Start 完成事件推进，此处不动。
-                if (!m_prevOnGround) {
+                if (m_prevOnGround) {
+                    m_takeoffY = componentBody.Position.Y;
                     m_jumpPhase = (velocityY > JumpStartVelocityThreshold) ? JumpPhaseStart : JumpPhaseLoop;
                 }
             }
