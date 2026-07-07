@@ -1,22 +1,18 @@
-using System;
 using Engine.Animation;
-using Engine.Graphics;
 using GameEntitySystem;
 using TemplatesDatabase;
 
 namespace Game {
     /// <summary>
-    /// glTF 玩家模型组件。
-    /// 继承 ComponentHumanModel，复用基类的模型加载、参数同步、Animate 短路逻辑。
+    /// glTF 玩家跳跃相位状态机组件。
+    /// 作为 ComponentAnimationParticipant 挂载，不替换 ComponentHumanModel。
     /// </summary>
     /// <remarks>
     /// 工作原理：
-    /// - 基类 ComponentHumanModel.Animate() 检测到 AnimationController != null 时直接 return，
-    ///   跳过旧的 6 骨骼过程式动画（AnimateCreatureFallback）。
-    /// - 基类 ComponentHumanModel.SyncAnimationParameters() 每帧同步 IsDead/IsInWater/IsOnGround/
-    ///   VelocityY/WalkSpeed 等参数，状态规则据此选择 glb 内置动画。
-    /// - 基类 ComponentHumanModel.SetModel() 用 FindBone("Body"/"Head"/"Hand1"/...)，
-    ///   因配置了 boneAliases，会解析到 glb 真实骨骼，蹲下等基类逻辑不会 NRE。
+    /// - 作为参与者由 ComponentModel 收集（ShouldApplyTo 限定有 controller 的 model）。
+    /// - ComponentModel.Animate() 每帧在 controller.Update 之前调用 SyncAnimationParameters，
+    ///   此组件更新 JumpPhase 参数，状态规则据此选择 glb 内置动画。
+    /// - OnControllerCreated 在控制器就绪时写入 JumpPhase 初值。
     ///
     /// 跳跃相位状态机（Jump_Start / Jump_Loop / Jump_Land 三段式）：
     /// 滞空动画分起跳、滞空循环、落地三段，是带历史依赖的状态序列
@@ -28,7 +24,7 @@ namespace Game {
     /// - Jump_Land 播完（onComplete trigger "JumpLandComplete"）→ Ground
     /// - 进入水/飞行/梯子/骑乘/死亡 → 重置 Ground，避免落地误播 Land
     /// </remarks>
-    public class ComponentGltfPlayerModel : ComponentHumanModel {
+    public class ComponentGltfPlayerJumpController : ComponentAnimationParticipant {
         // 跳跃相位取值（写入控制器 JumpPhase 参数，供 JSON 规则 [JumpPhase]=='xxx' 查询）
         private const string JumpPhaseGround = "Ground";
         private const string JumpPhaseStart = "Start";
@@ -44,26 +40,36 @@ namespace Game {
         // 起跳判定阈值：离地瞬间垂直速度超过此值视为主动起跳（上升），否则视为掉落
         private const float JumpStartVelocityThreshold = 0.5f;
 
+        private ComponentCreature m_componentCreature;
+        private ComponentRider m_componentRider;
+
         /// <summary>
-        /// 加载：基类加载后初始化跳跃相位参数。
-        /// 规则首帧评估前 JumpPhase 需已存在（Load 早于首帧 Update）。
+        /// 加载：缓存依赖（参与者不继承模型组件，自行 FindComponent 取）。
         /// </summary>
         public override void Load(ValuesDictionary valuesDictionary, IdToEntityMap idToEntityMap) {
             base.Load(valuesDictionary, idToEntityMap);
-            if (AnimationController != null) {
-                AnimationController.Parameters.SetString("JumpPhase", m_jumpPhase);
-            }
+            m_componentCreature = Entity.FindComponent<ComponentCreature>(true);
+            m_componentRider = Entity.FindComponent<ComponentRider>();
         }
 
         /// <summary>
-        /// 同步动画参数：基类同步全部参数后，更新跳跃相位状态机并写回控制器。
+        /// 仅参与有 AnimationController 的 model（服装 model 无 controller 自动排除），
+        /// 避免本组件（Sync 有状态推进）一帧被多个 model 调用导致相位机错乱。
         /// </summary>
-        public override void SyncAnimationParameters() {
-            base.SyncAnimationParameters();
+        public override bool ShouldApplyTo(ComponentModel componentModel)
+            => componentModel is ComponentHumanModel && componentModel.AnimationController != null;
 
-            var ctrl = AnimationController;
-            if (ctrl == null) return;
+        /// <summary>
+        /// 控制器就绪：写入 JumpPhase 初始值（规则首帧评估前需已存在）。
+        /// </summary>
+        public override void OnControllerCreated(AnimationController controller) {
+            controller.Parameters.SetString("JumpPhase", m_jumpPhase);
+        }
 
+        /// <summary>
+        /// 同步动画参数：更新跳跃相位状态机并写回控制器（每帧 controller.Update 之前调用）。
+        /// </summary>
+        public override void SyncAnimationParameters(AnimationController controller) {
             var componentBody = m_componentCreature.ComponentBody;
             var componentLocomotion = m_componentCreature.ComponentLocomotion;
 
@@ -95,20 +101,17 @@ namespace Game {
             }
 
             m_prevOnGround = onGround;
-            ctrl.Parameters.SetString("JumpPhase", m_jumpPhase);
+            controller.Parameters.SetString("JumpPhase", m_jumpPhase);
         }
 
         /// <summary>
-        /// 动画事件：处理跳跃动画完成 trigger，推进相位。调用基类保留内置事件处理。
+        /// 动画事件：处理跳跃动画完成 trigger，推进相位。
         /// </summary>
-        public override void HandleAnimationEvent(AnimationEvent animationEvent) {
-            if (animationEvent != null) {
-                switch (animationEvent.Name) {
-                    case "JumpStartComplete": m_jumpPhase = JumpPhaseLoop; break;
-                    case "JumpLandComplete": m_jumpPhase = JumpPhaseGround; break;
-                }
+        public override void HandleAnimationEvent(AnimationController controller, AnimationEvent animationEvent) {
+            switch (animationEvent.Name) {
+                case "JumpStartComplete": m_jumpPhase = JumpPhaseLoop; break;
+                case "JumpLandComplete": m_jumpPhase = JumpPhaseGround; break;
             }
-            base.HandleAnimationEvent(animationEvent);
         }
     }
 }
