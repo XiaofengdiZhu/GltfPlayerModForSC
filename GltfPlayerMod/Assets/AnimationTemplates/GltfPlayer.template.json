@@ -16,17 +16,5 @@
             "boneMask": [ "pelvis" ],
             "boneMaskExclude": [ "spine_01" ]
         }
-    },
-    "stateTracks": {
-        "Activity": {
-            "type": "Enum",
-            "defaultValue": "None",
-            "enumValues": [ "None", "Attack", "Aim" ]
-        },
-        "Ride": {
-            "type": "Enum",
-            "defaultValue": "None",
-            "enumValues": [ "None", "Riding" ]
-        }
     }
 }

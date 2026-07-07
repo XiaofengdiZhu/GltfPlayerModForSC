@@ -34,10 +34,25 @@
       "rootBoneRotation": [90, 0, 0],
       "rootBoneTranslation": [0, 0.5, 0]
     },
-    "jump": {
+    "jump_start": {
+      "source": "Jump_Start",
+      "loop": false,
+      "blendDuration": 0.15,
+      "preservePose": true,
+      "onComplete": { "type": "trigger", "name": "JumpStartComplete" }
+    },
+    "jump_loop": {
       "source": "Jump_Loop",
       "loop": true,
       "blendDuration": 0.2
+    },
+    "jump_land": {
+      "source": "Jump_Land",
+      "loop": false,
+      "endPhase": 0.21,
+      "blendDuration": 0.15,
+      "preservePose": true,
+      "onComplete": { "type": "trigger", "name": "JumpLandComplete" }
     },
     "crouch_idle": {
       "source": "Crouch_Idle_Loop",
@@ -91,6 +106,10 @@
           "animation": "death"
         },
         {
+          "condition": "[JumpPhase] == 'Land'",
+          "animation": "jump_land"
+        },
+        {
           "condition": "[IsRiding]",
           "animation": "idle"
         },
@@ -129,8 +148,12 @@
               }
             },
             {
+              "condition": "[JumpPhase] == 'Start'",
+              "animation": "jump_start"
+            },
+            {
               "condition": "true",
-              "animation": "jump"
+              "animation": "jump_loop"
             }
           ]
         },
