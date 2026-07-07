@@ -56,20 +56,26 @@
     "jump_land": {
       "source": "Jump_Land",
       "loop": false,
+      "speed": 1.5,
       "endPhase": 0.21,
       "blendDuration": 0.15,
       "preservePose": true,
       "onComplete": { "type": "trigger", "name": "JumpLandComplete" }
     },
-    "crouch_idle": {
-      "source": "Crouch_Idle_Loop",
-      "loop": true,
-      "blendDuration": 0.3
-    },
     "crouch_walk": {
       "source": "Crouch_Fwd_Loop",
       "loop": true,
       "blendDuration": 0.25
+    },
+    "crouch_tired": {
+      "source": "Kneeling Tired",
+      "loop": true,
+      "blendDuration": 0.3
+    },
+    "crouch_idle": {
+      "source": "Crouch_Idle_Loop",
+      "loop": true,
+      "blendDuration": 0.3
     },
     "run": {
       "source": "Sprint_Loop",
@@ -80,6 +86,16 @@
       "source": "Walk_Loop",
       "loop": true,
       "blendDuration": 0.25
+    },
+    "shivering": {
+      "source": "Shivering",
+      "loop": true,
+      "blendDuration": 0.3
+    },
+    "idle_tired": {
+      "source": "Zombie_Idle_Loop",
+      "loop": true,
+      "blendDuration": 0.3
     },
     "idle": {
       "source": "Idle_Loop",
@@ -155,7 +171,7 @@
               "condition": "[IsOnLadder] > 0.0",
               "animation": {
                 "source": "crawl",
-                "speed": "[VelocityY] * 1.5"
+                "speed": "[VelocityY] * 1.2"
               }
             },
             {
@@ -175,8 +191,12 @@
               "condition": "[SpeedAbs] > 0.2",
               "animation": {
                 "source": "crouch_walk",
-                "speed": "[Speed] * 1.25"
+                "speed": "[Speed] * 1.1"
               }
+            },
+            {
+              "condition": "[IsTired] == true",
+              "animation": "crouch_tired"
             },
             {
               "condition": "true",
@@ -188,15 +208,23 @@
           "condition": "[SpeedAbs] > [WalkSpeed] * 0.8",
           "animation": {
             "source": "run",
-            "speed": "[Speed] * 0.2"
+            "speed": "[Speed] * 0.225"
           }
         },
         {
           "condition": "[SpeedAbs] > 0.2",
           "animation": {
             "source": "walk",
-            "speed": "[Speed]"
+            "speed": "[Speed] * 0.8"
           }
+        },
+        {
+          "condition": "[IsShivering] == true",
+          "animation": "shivering"
+        },
+        {
+          "condition": "[IsTired] == true",
+          "animation": "idle_tired"
         },
         {
           "condition": "true",

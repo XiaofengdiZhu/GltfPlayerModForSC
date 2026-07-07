@@ -4,7 +4,7 @@ using TemplatesDatabase;
 
 namespace Game {
     /// <summary>
-    /// glTF 玩家 Base 层相位机组件（跳跃 + 起床）。
+    /// glTF 玩家 Base 层相位机组件（跳跃 + 起床 + 闲时受寒/疲劳）。
     /// 作为 ComponentAnimationParticipant 挂载，不替换 ComponentHumanModel。
     /// </summary>
     /// <remarks>
@@ -30,6 +30,12 @@ namespace Game {
     /// - wakeup 播完（onComplete trigger "WakeUpComplete"）→ IsWakingUp=false
     /// - 重新入睡或濒死（Health<=0）→ IsWakingUp=false（清残留，防再睡/复活后卡过渡）
     /// 起床期间锁定：IsWakingUp 为 true 时 Base 规则强制选 wakeup，播完才交还。
+    ///
+    /// 闲时受寒/疲劳（IsShivering、IsTired 布尔，每帧重算，无状态）：
+    /// - IsShivering：患流感（ComponentFlu.HasFlu）或体温过低（Temperature &lt; 3）
+    /// - IsTired：体力过低（Stamina &lt; 0.33）或睡眠过低（Sleep &lt; 0.2）
+    /// 仅在站立 idle（SpeedAbs 已低于走/跑阈值）时由 Base 规则替换 idle；
+    /// 蹲下 idle 时疲劳改用 kneeling_tired（Kneeling Tired），见 JSON 蹲下组。
     /// </remarks>
     public class ComponentGltfPlayerBaseController : ComponentAnimationParticipant {
         // 跳跃相位取值（写入控制器 JumpPhase 参数，供 JSON 规则 [JumpPhase]=='xxx' 查询）
@@ -54,6 +60,8 @@ namespace Game {
         private ComponentCreature m_componentCreature;
         private ComponentRider m_componentRider;
         private ComponentSleep m_componentSleep;
+        private ComponentFlu m_componentFlu;
+        private ComponentVitalStats m_componentVitalStats;
 
         /// <summary>
         /// 加载：缓存依赖（参与者不继承模型组件，自行 FindComponent 取）。
@@ -63,6 +71,8 @@ namespace Game {
             m_componentCreature = Entity.FindComponent<ComponentCreature>(true);
             m_componentRider = Entity.FindComponent<ComponentRider>();
             m_componentSleep = Entity.FindComponent<ComponentSleep>();
+            m_componentFlu = Entity.FindComponent<ComponentFlu>();
+            m_componentVitalStats = Entity.FindComponent<ComponentVitalStats>();
         }
 
         /// <summary>
@@ -78,6 +88,8 @@ namespace Game {
         public override void OnControllerCreated(AnimationController controller) {
             controller.Parameters.SetString("JumpPhase", m_jumpPhase);
             controller.Parameters.SetBool("IsWakingUp", m_isWakingUp);
+            controller.Parameters.SetBool("IsShivering", false);
+            controller.Parameters.SetBool("IsTired", false);
         }
 
         /// <summary>
@@ -124,7 +136,7 @@ namespace Game {
                 if (sleeping) {
                     m_isWakingUp = false;
                 }
-                else if (m_prevIsSleeping && !sleeping) {
+                else if (m_prevIsSleeping) {
                     m_isWakingUp = true;
                 }
                 if (m_componentCreature.ComponentHealth.Health <= 0f) {
@@ -133,6 +145,16 @@ namespace Game {
                 m_prevIsSleeping = sleeping;
                 controller.Parameters.SetBool("IsWakingUp", m_isWakingUp);
             }
+
+            // === 闲时受寒/疲劳（无状态，每帧重算）===
+            // 受寒：患流感 或 体温过低；疲劳：体力或睡眠过低。
+            // 仅在站立 idle（SpeedAbs 已低于走/跑）时由 Base 规则替换 idle；蹲下见 JSON 蹲下组。
+            bool isShivering = (m_componentFlu != null && m_componentFlu.HasFlu)
+                || (m_componentVitalStats != null && m_componentVitalStats.Temperature < 6f);
+            bool isTired = m_componentVitalStats != null
+                && (m_componentVitalStats.Stamina < 0.33f || m_componentVitalStats.Sleep < 0.2f);
+            controller.Parameters.SetBool("IsShivering", isShivering);
+            controller.Parameters.SetBool("IsTired", isTired);
         }
 
         /// <summary>
