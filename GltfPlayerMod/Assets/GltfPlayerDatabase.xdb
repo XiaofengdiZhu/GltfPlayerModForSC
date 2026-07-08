@@ -12,8 +12,12 @@
       <Parameter Name="DisableAnimation" Guid="02345b51-4d28-4503-aef0-b1ecc2dc01cb" Value="True" Type="bool" />
       <Parameter Name="DisableDrawing" Guid="ebbb470a-56a6-4c27-b30f-c00a52942a11" Value="True" Type="bool" />
     </MemberComponentTemplate>
-    <!-- 添加 Base 层相位机参与者（跳跃+起床） -->
+    <!-- 添加 Base 层相位机参与者（跳跃+起床+攀爬） -->
     <MemberComponentTemplate Name="GltfPlayerBaseController" Guid="ce93a0bc-897b-4f15-a611-4bf96c63cca9" InheritanceParent="d7d53fcb-36ec-4849-ad44-9ecbcd89fc83" />
+    <!-- 替换 AutoJump 类为 glTF 版：检测越障时改用攀爬动画（root motion 接管）替代物理跳 -->
+    <MemberComponentTemplate Name="AutoJump" Guid="1381f0b2-ac0e-4bf8-bbde-daba5f821303">
+      <Parameter Name="Class" Guid="8b20593f-c94e-4b82-909d-78b45218974d" Value="Game.ComponentGltfPlayerAutoJump" Type="string" />
+    </MemberComponentTemplate>
   </EntityTemplate>
   <!-- 替换 MalePlayer 的模型和默认纹理 -->
   <Parameter Name="ModelName" Guid="74de5cab-670e-4b90-ab35-8bb9c569d83e" new-Value="Models/GltfPlayer" Type="string" />

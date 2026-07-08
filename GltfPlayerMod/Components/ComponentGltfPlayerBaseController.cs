@@ -1,3 +1,4 @@
+using Engine;
 using Engine.Animation;
 using GameEntitySystem;
 using TemplatesDatabase;
@@ -14,14 +15,19 @@ namespace Game {
     ///   此组件更新各相位参数，Base 层状态规则据此选择 glb 内置动画。
     /// - OnControllerCreated 在控制器就绪时写入各参数初值。
     ///
-    /// 跳跃相位状态机（JumpPhase：Ground/Start/Loop/Land，Jump_Start/Jump_Loop/Jump_Land 三段式）：
-    /// 滞空动画分起跳、滞空循环、落地三段，是带历史依赖的状态序列
+    /// 跳跃相位状态机（JumpPhase：Ground/Start/Loop/Land/ClimbUp）：
+    /// 滞空动画分起跳、滞空循环、落地三段（Start/Loop/Land），是带历史依赖的状态序列
     /// （Start 播完才进 Loop、净下落超阈值才播 Land），纯条件规则无法表达。
+    /// ClimbUp 为 AutoJump 越障专用相位，由攀爬动画（ClimbUp_1m_RM）的 root motion Override 接管位移，
+    /// 不走物理跳跃（ComponentGltfPlayerAutoJump 触发时已撤销 JumpOrder）。
     /// 此组件维护 JumpPhase 参数写入控制器，配合 JSON 规则与动画完成事件驱动转换：
     /// - 离地边沿：上升（VelocityY > 阈值）→ Start；下降（走下悬崖等掉落）→ Loop
     /// - 落地边沿：净下落 &gt; 1.8m→Land；否则 Ground（同高/短掉落不播 Land）
     /// - Jump_Start 播完（onComplete trigger "JumpStartComplete"）→ Loop
     /// - Jump_Land 播完（onComplete trigger "JumpLandComplete"）→ Ground
+    /// - ComponentGltfPlayerAutoJump 检测到 AutoJump 越障（ConsumeClimbUpPending）→ ClimbUp
+    /// - ClimbUp 期间保持相位，不被离地/落地边沿覆盖
+    /// - ClimbUp_1m_RM 播完（onComplete trigger "ClimbUpComplete"）→ Ground
     /// - 进入水/飞行/梯子/骑乘/死亡 → 重置 Ground，避免落地误播 Land
     ///
     /// 起床状态机（IsWakingUp 布尔）：
@@ -43,6 +49,7 @@ namespace Game {
         private const string JumpPhaseStart = "Start";
         private const string JumpPhaseLoop = "Loop";
         private const string JumpPhaseLand = "Land";
+        private const string JumpPhaseClimbUp = "ClimbUp";
 
         // 当前跳跃相位
         private string m_jumpPhase = JumpPhaseGround;
@@ -69,6 +76,9 @@ namespace Game {
         private ComponentFlu m_componentFlu;
         private ComponentVitalStats m_componentVitalStats;
 
+        // glTF 玩家自动跳跃（可空：仅 Player 实体挂载）；触发越障时消费其攀爬标志进入 ClimbUp 相位
+        private ComponentGltfPlayerAutoJump m_componentAutoJump;
+
         /// <summary>
         /// 加载：缓存依赖（参与者不继承模型组件，自行 FindComponent 取）。
         /// </summary>
@@ -79,6 +89,7 @@ namespace Game {
             m_componentSleep = Entity.FindComponent<ComponentSleep>();
             m_componentFlu = Entity.FindComponent<ComponentFlu>();
             m_componentVitalStats = Entity.FindComponent<ComponentVitalStats>();
+            m_componentAutoJump = Entity.FindComponent<ComponentGltfPlayerAutoJump>();
         }
 
         /// <summary>
@@ -116,8 +127,22 @@ namespace Game {
                 || m_componentRider?.Mount != null
                 || m_componentCreature.ComponentHealth.Health <= 0;
 
+            // AutoJump 越障标志（每帧消费清除，避免残留误触发后续离地）
+            bool climbUpTriggered = m_componentAutoJump != null && m_componentAutoJump.ConsumeClimbUpPending();
+
             if (overridden) {
+                // 进水/飞行/梯子/骑乘/死亡：重置相位。body 物理恢复由 API ApplyRootMotionPhysics
+                // 在 config 切 null 时自动执行（规则不选 ClimbUp 动画 → m_currentRootMotionConfig=null → exit 恢复）。
                 m_jumpPhase = JumpPhaseGround;
+            }
+            else if (climbUpTriggered) {
+                // AutoJump 越障：进 ClimbUp 相位，ClimbUp_1m_RM 的 root motion Override 接管位移。
+                // body 物理副作用（禁重力/碰撞/输入移动）由 API ApplyRootMotionPhysics 据 JSON physics 块自动应用。
+                m_jumpPhase = JumpPhaseClimbUp;
+            }
+            else if (m_jumpPhase == JumpPhaseClimbUp) {
+                // 攀爬中：保持 ClimbUp，仅 onComplete "ClimbUpComplete" 推进到 Ground。
+                // 不被离地/落地边沿覆盖（root motion 抬起会触发离地边沿，必须保护）。
             }
             else if (onGround) {
                 // 刚落地：净下落高度（起跳/下落时 Y - 当前 Y）超过 JumpLandMinDropHeight 才播 Land
@@ -172,6 +197,12 @@ namespace Game {
             switch (animationEvent.Name) {
                 case "JumpStartComplete": m_jumpPhase = JumpPhaseLoop; break;
                 case "JumpLandComplete": m_jumpPhase = JumpPhaseGround; break;
+                case "ClimbUpComplete": {
+                    // root motion 完成：清速 + 物理恢复由 API ApplyRootMotionPhysics
+                    // 在 config 切 null 时自动执行（ClearVelocityOnExit + RestoreRootMotionPhysics）。
+                    m_jumpPhase = JumpPhaseGround;
+                    break;
+                }
                 case "WakeUpComplete": m_isWakingUp = false; break;
             }
         }

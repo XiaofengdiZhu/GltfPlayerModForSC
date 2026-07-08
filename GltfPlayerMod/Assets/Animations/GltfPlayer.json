@@ -62,6 +62,23 @@
       "preservePose": true,
       "onComplete": { "type": "trigger", "name": "JumpLandComplete" }
     },
+    "climbup": {
+      "source": "ClimbUp_1m_RM",
+      "loop": false,
+      "blendDuration": 0.1,
+      "preservePose": true,
+      "rootMotion": {
+        "sourceBone": "root",
+        "translation": {
+          "mode": "Override",
+          "velocityMask": [1, 1, 1]
+        },
+        "physics": {
+          "disableAll": true
+        }
+      },
+      "onComplete": { "type": "trigger", "name": "ClimbUpComplete" }
+    },
     "crouch_walk": {
       "source": "Crouch_Fwd_Loop",
       "loop": true,
@@ -127,6 +144,10 @@
         {
           "condition": "[IsDead] == true",
           "animation": "death"
+        },
+        {
+          "condition": "[JumpPhase] == 'ClimbUp'",
+          "animation": "climbup"
         },
         {
           "condition": "[JumpPhase] == 'Land'",
