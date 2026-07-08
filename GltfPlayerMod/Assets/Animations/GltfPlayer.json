@@ -119,6 +119,11 @@
       "loop": true,
       "blendDuration": 0.3
     },
+    "melee_idle": {
+      "source": "Sword_Idle",
+      "loop": true,
+      "blendDuration": 0.3
+    },
     "chop": {
       "source": "TreeChopping_Loop",
       "loop": true,
@@ -240,6 +245,10 @@
           }
         },
         {
+          "condition": "[IsHoldingMeleeWeapon] == true",
+          "animation": "melee_idle"
+        },
+        {
           "condition": "[IsShivering] == true",
           "animation": "shivering"
         },
@@ -305,6 +314,7 @@
     "SpeedAbs": 0.0,
     "WalkSpeed": 3.1,
     "PokingPhase": 0.0,
-    "IsBoat": false
+    "IsBoat": false,
+    "IsHoldingMeleeWeapon": false
   }
 }
