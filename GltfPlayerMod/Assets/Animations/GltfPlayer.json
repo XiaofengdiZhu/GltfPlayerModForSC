@@ -65,6 +65,7 @@
     "climbup": {
       "source": "ClimbUp_1m_RM",
       "loop": false,
+      "endPhase": 0.75,
       "blendDuration": 0.1,
       "preservePose": true,
       "rootMotion": {

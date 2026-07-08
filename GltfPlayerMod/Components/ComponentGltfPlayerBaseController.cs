@@ -53,6 +53,11 @@ namespace Game {
         private ComponentMiner m_componentMiner;
 
         /// <summary>
+        /// 当前是否在 ClimbUp 相位（攀爬动画进行中）。供 ComponentGltfPlayerAutoJump 抑制重复触发。
+        /// </summary>
+        public bool IsClimbing => m_jumpPhase == JumpPhaseClimbUp;
+
+        /// <summary>
         /// 加载：缓存依赖（参与者不继承模型组件，自行 FindComponent 取）。
         /// </summary>
         public override void Load(ValuesDictionary valuesDictionary, IdToEntityMap idToEntityMap) {
