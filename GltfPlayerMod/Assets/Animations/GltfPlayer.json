@@ -120,6 +120,14 @@
       "loop": true,
       "blendDuration": 0.3
     },
+    "pickup": {
+      "source": "PickUp_Table",
+      "loop": false,
+      "preservePose": true,
+      "blendDuration": 0.2,
+      "onComplete": { "type": "trigger", "name": "PickUpComplete" },
+      "onInterrupt": { "type": "trigger", "name": "PickUpInterrupt" }
+    },
     "melee_idle": {
       "source": "Sword_Idle",
       "loop": true,
@@ -258,6 +266,10 @@
           "animation": "idle_tired"
         },
         {
+          "condition": "[IsPickingUp] == true",
+          "animation": "pickup"
+        },
+        {
           "condition": "true",
           "animation": "idle"
         }
@@ -316,6 +328,7 @@
     "WalkSpeed": 3.1,
     "PokingPhase": 0.0,
     "IsBoat": false,
-    "IsHoldingMeleeWeapon": false
+    "IsHoldingMeleeWeapon": false,
+    "IsPickingUp": false
   }
 }

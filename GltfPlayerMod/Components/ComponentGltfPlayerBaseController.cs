@@ -21,6 +21,9 @@ namespace Game {
         private const string JumpPhaseLand = "Land";
         private const string JumpPhaseClimbUp = "ClimbUp";
 
+        // pickup 动画 source 名（GltfPlayer.json pickup 别名 → PickUp_Table）
+        private const string PickupSource = "PickUp_Table";
+
         // 当前跳跃相位
         private string m_jumpPhase = JumpPhaseGround;
 
@@ -52,6 +55,18 @@ namespace Game {
         // 玩家挖掘组件（可空：服装 model 无）；读 ActiveBlockValue 判定手持近战武器
         private ComponentMiner m_componentMiner;
 
+        // 拾取物飞行检测：扫 SubsystemPickables 找飞向本玩家的 Pickable（FlyToGatherer 指向本实体 gatherer）
+        private ComponentPickableGatherer m_componentPickableGatherer;
+        private SubsystemPickables m_subsystemPickables;
+
+        // pickup 锁：true=Base 层正在播 pickup，IsPickingUp 强制 true 防 FlyToGatherer 清空瞬间抖动重播。
+        // 置锁靠检测 Base 层动画==PickUp_Table（非 flyingToMe）；解锁靠 PickUpComplete/PickUpInterrupt 事件 + 兜底（见 UpdatePickupState）。
+        private bool m_pickupActive;
+
+        // pickup 刚播完标志：PickUpComplete 事件置位，下帧 Sync 强制 IsPickingUp=false 一帧，让规则离开 pickup（path 变），
+        // 以便 flyingToMe 仍 true 时重选 pickup 触发重切重播（preservePose 保持 pickup 末态，path 不变会跳过重切 → 只播一次）。
+        private bool m_pickupJustCompleted;
+
         /// <summary>
         /// 当前是否在 ClimbUp 相位（攀爬动画进行中）。供 ComponentGltfPlayerAutoJump 抑制重复触发。
         /// </summary>
@@ -69,6 +84,8 @@ namespace Game {
             m_componentVitalStats = Entity.FindComponent<ComponentVitalStats>();
             m_componentAutoJump = Entity.FindComponent<ComponentGltfPlayerAutoJump>();
             m_componentMiner = Entity.FindComponent<ComponentMiner>();
+            m_componentPickableGatherer = Entity.FindComponent<ComponentPickableGatherer>();
+            m_subsystemPickables = Project.FindSubsystem<SubsystemPickables>();
         }
 
         /// <summary>
@@ -87,6 +104,7 @@ namespace Game {
             controller.Parameters.SetBool("IsShivering", false);
             controller.Parameters.SetBool("IsTired", false);
             controller.Parameters.SetBool("IsHoldingMeleeWeapon", false);
+            controller.Parameters.SetBool("IsPickingUp", false);
         }
 
         /// <summary>
@@ -97,6 +115,7 @@ namespace Game {
             UpdateWakeUpState(controller);
             UpdateVitalState(controller);
             UpdateMeleeWeaponState(controller);
+            UpdatePickupState(controller);
         }
 
         /// <summary>
@@ -235,6 +254,82 @@ namespace Game {
         }
 
         /// <summary>
+        /// 拾取动作：有 Pickable 飞向本玩家时触发 pickup 动画（PickUp_Table，完整播放）。
+        /// </summary>
+        /// <remarks>
+        /// 触发源：ComponentPickableGatherer 把进入吸引距离（1.75m）且可拾取的 Pickable 设 FlyToPosition + FlyToGatherer=本 gatherer，
+        /// Pickable 随后飞向玩家。本方法扫 SubsystemPickables.Pickables 找 FlyToGatherer 指向本实体的。
+        /// IsPickingUp 仅高于 idle（见 JSON base 规则），走/跑/游泳/骑乘等更高优先级规则胜出时 pickup 不播。
+        /// 防重入（m_pickupActive 锁）：锁语义=「pickup 正在 Base 层播放」。置锁靠检测 Base 层动画==PickUp_Table（非 flyingToMe），
+        /// 故走/跑中 pickup 不播时不锁，拾取物飞走后 IsPickingUp 自然回落（不卡死）。
+        /// 锁定期 IsPickingUp 强制 true，防 Pickable 飞到被拾取（FlyToGatherer 清空）瞬间抖动 → pickup 中途切走再重播。
+        /// 解锁：pickup 播完（onComplete PickUpComplete）/被打断（onInterrupt PickUpInterrupt）事件 → m_pickupActive=false；
+        /// 兜底：锁着但 Base 层已非 pickup（事件缺失/第一人称冻结后切回）→ 解锁防卡死。
+        /// 重播：pickup 播完后 preservePose 保持末态，path 不变致规则跳过重切；m_pickupJustCompleted（PickUpComplete 置位）
+        /// 下帧强制 IsPickingUp=false 让规则离开 pickup（path 变），flyingToMe 仍 true 时重选 → 重切重播（否则只播一次）。
+        /// 仅 Player 实体挂 ComponentPickableGatherer；服装 model 无（gatherer=null → 不触发）。
+        /// </remarks>
+        void UpdatePickupState(AnimationController controller) {
+            // pickup 刚播完：preservePose 保持末态致 path 不变，规则跳过重切 → 强制 IsPickingUp=false 一帧
+            // 让规则选 idle/其他（path 变），下帧 flyingToMe=true 时重选 pickup（path 变）触发重切重播。
+            if (m_pickupJustCompleted) {
+                m_pickupJustCompleted = false;
+                controller.Parameters.SetBool("IsPickingUp", false);
+                return;
+            }
+            bool flyingToMe = false;
+            if (m_componentPickableGatherer != null
+                && m_subsystemPickables != null) {
+                foreach (Pickable pickable in m_subsystemPickables.Pickables) {
+                    if (pickable.FlyToPosition.HasValue
+                        && pickable.FlyToGatherer == m_componentPickableGatherer) {
+                        flyingToMe = true;
+                        break;
+                    }
+                }
+            }
+
+            // Base 层当前是否在播 pickup。本方法在 controller.Update 前，读的是上帧 Update 后状态。
+            // AnimationPlayer 过渡期返回 TargetPlayer，故 transition 切入/稳态/PreservePose 末态均命中。
+            AnimationLayer baseLayer = null;
+            AnimationLayer[] layers = controller.m_layers;
+            if (layers != null) {
+                foreach (AnimationLayer l in layers) {
+                    if (l.Index == 0) {
+                        baseLayer = l;
+                        break;
+                    }
+                }
+            }
+            bool basePlayingPickup = baseLayer?.AnimationPlayer?.Animation?.Name == PickupSource;
+
+            bool isPickingUp;
+            if (m_pickupActive) {
+                // pickup 正在播放：锁 IsPickingUp=true，等 PickUpComplete/PickUpInterrupt 事件解锁。
+                if (!basePlayingPickup) {
+                    // 兜底解锁：pickup 已不在 Base 层（被打断事件未到，或第一人称冻结后切回非 pickup 态）→ 解锁防卡死。
+                    // 正常退出靠事件，此分支仅覆盖事件缺失/冻结边界。
+                    m_pickupActive = false;
+                    isPickingUp = flyingToMe;
+                }
+                else {
+                    isPickingUp = true;
+                }
+            }
+            else {
+                // 未锁：IsPickingUp 直接反映 flyingToMe。规则按优先级决定是否真播 pickup——
+                // 走/跑/游泳/骑乘等更高优先级规则胜出时 pickup 不播（不锁），拾取物飞走后 IsPickingUp 自然回落，不卡。
+                isPickingUp = flyingToMe;
+                // pickup 实际开始播放（规则选了它）→ 锁，确保播完整段不被 flyingToMe 抖动打断。
+                // 比"凭 flyingToMe 置锁"晚一帧（transition 当帧切入，下帧 Sync 才检测到），窗口极小可接受。
+                if (flyingToMe && basePlayingPickup) {
+                    m_pickupActive = true;
+                }
+            }
+            controller.Parameters.SetBool("IsPickingUp", isPickingUp);
+        }
+
+        /// <summary>
         /// 动画事件：处理跳跃/起床动画完成 trigger，推进状态。
         /// </summary>
         public override void HandleAnimationEvent(AnimationController controller, AnimationEvent animationEvent) {
@@ -248,6 +343,17 @@ namespace Game {
                     break;
                 }
                 case "WakeUpComplete": m_isWakingUp = false; break;
+                case "PickUpComplete": {
+                    // pickup 播完：解锁 + 标记刚完成，下帧强制 IsPickingUp=false 离开 pickup（path 变）以便重播
+                    m_pickupActive = false;
+                    m_pickupJustCompleted = true;
+                    break;
+                }
+                case "PickUpInterrupt": {
+                    // pickup 被打断：解锁（Base 已被高优先级切走，path 已变，无需标记重播）
+                    m_pickupActive = false;
+                    break;
+                }
             }
         }
     }
