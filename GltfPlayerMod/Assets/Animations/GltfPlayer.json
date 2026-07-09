@@ -128,6 +128,15 @@
       "onComplete": { "type": "trigger", "name": "PickUpComplete" },
       "onInterrupt": { "type": "trigger", "name": "PickUpInterrupt" }
     },
+    "attacked": {
+      "source": "Pistol_Aim_Up",
+      "loop": false,
+      "startPhase": 0,
+      "endPhase": 0,
+      "preservePose": true,
+      "blendDuration": 0.25,
+      "onComplete": { "type": "trigger", "name": "AttackedComplete" }
+    },
     "melee_idle": {
       "source": "Sword_Idle",
       "loop": true,
@@ -304,6 +313,19 @@
           "animation": null
         }
       ]
+    },
+    "attacked": {
+      "layer": "UpperBody",
+      "rules": [
+        {
+          "condition": "[IsAttacked] == true",
+          "animation": "attacked"
+        },
+        {
+          "condition": "true",
+          "animation": null
+        }
+      ]
     }
   },
   "boneAliases": {
@@ -329,6 +351,7 @@
     "PokingPhase": 0.0,
     "IsBoat": false,
     "IsHoldingMeleeWeapon": false,
-    "IsPickingUp": false
+    "IsPickingUp": false,
+    "IsAttacked": false
   }
 }

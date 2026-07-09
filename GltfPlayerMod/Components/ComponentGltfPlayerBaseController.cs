@@ -24,6 +24,9 @@ namespace Game {
         // pickup 动画 source 名（GltfPlayer.json pickup 别名 → PickUp_Table）
         private const string PickupSource = "PickUp_Table";
 
+        // 受击动画 source 名（须与 GltfPlayer.json attacked 别名 source 一致；换动画须同步改此处）
+        private const string AttackedSource = "Pistol_Aim_Up";
+
         // 当前跳跃相位
         private string m_jumpPhase = JumpPhaseGround;
 
@@ -67,6 +70,17 @@ namespace Game {
         // 以便 flyingToMe 仍 true 时重选 pickup 触发重切重播（preservePose 保持 pickup 末态，path 不变会跳过重切 → 只播一次）。
         private bool m_pickupJustCompleted;
 
+        // 受击待处理：ComponentBody.Attacked 事件（仅攻击命中）置位，下帧 Sync 消费触发 attacked 动画。
+        private bool m_attackedPending;
+
+        // attacked 锁：true=UpperBody 层正在播 attacked，IsAttacked 强制 true 防 blend 期被打断/重复触发。
+        // 置锁靠检测 UpperBody 层动画==AttackedSource（Pistol_Aim_Up）；解锁靠 AttackedComplete 事件 + 兜底（见 UpdateAttackedState）。
+        private bool m_attackedActive;
+
+        // attacked 刚播完标志：AttackedComplete 事件置位，下帧 Sync 强制 IsAttacked=false 一帧让规则离开 attacked（path 变），
+        // 以便再次受击时重选 attacked 触发权重渐入重播（preservePose 保持后倾末态，path 不变会跳过重切 → 只播一次）。
+        private bool m_attackedJustCompleted;
+
         /// <summary>
         /// 当前是否在 ClimbUp 相位（攀爬动画进行中）。供 ComponentGltfPlayerAutoJump 抑制重复触发。
         /// </summary>
@@ -86,6 +100,12 @@ namespace Game {
             m_componentMiner = Entity.FindComponent<ComponentMiner>();
             m_componentPickableGatherer = Entity.FindComponent<ComponentPickableGatherer>();
             m_subsystemPickables = Project.FindSubsystem<SubsystemPickables>();
+
+            // 订阅受击事件：ComponentBody.Attacked 仅在攻击命中时触发（Attackment.cs:227），环境伤害不触发。
+            var componentBody = m_componentCreature.ComponentBody;
+            if (componentBody != null) {
+                componentBody.Attacked += delegate { m_attackedPending = true; };
+            }
         }
 
         /// <summary>
@@ -105,6 +125,7 @@ namespace Game {
             controller.Parameters.SetBool("IsTired", false);
             controller.Parameters.SetBool("IsHoldingMeleeWeapon", false);
             controller.Parameters.SetBool("IsPickingUp", false);
+            controller.Parameters.SetBool("IsAttacked", false);
         }
 
         /// <summary>
@@ -116,6 +137,7 @@ namespace Game {
             UpdateVitalState(controller);
             UpdateMeleeWeaponState(controller);
             UpdatePickupState(controller);
+            UpdateAttackedState(controller);
         }
 
         /// <summary>
@@ -330,6 +352,80 @@ namespace Game {
         }
 
         /// <summary>
+        /// 受击动作：被攻击命中时触发 attacked 动画（Pistol_Aim_Up 仅取首帧后倾姿势，blend 进出实现「后倾一瞬即回」）。
+        /// </summary>
+        /// <remarks>
+        /// 触发源：ComponentBody.Attacked 事件（仅攻击命中，Attackment.cs:227），环境伤害不触发 → m_attackedPending=true。
+        /// hit 状态层 UpperBody（boneMask spine_01 排除双臂 upperarm_l/r，保留肩膀 clavicle），[IsAttacked]==true 选 attacked 别名
+        /// （endPhase=0 仅后倾首帧，目标 player 首帧即 IsPlaying=false）。
+        /// CheckAnimationCompletion 的 blending 判据（过渡/权重渐入期不判完成）保证 onComplete 在权重渐入完成后才触发，
+        /// 否则 blend 中误触发会刚切入就切回（见 AnimationController.CheckAnimationCompletion）。
+        /// 防重入（m_attackedActive 锁）：锁语义=「attacked 正在 UpperBody 层播放」。置锁靠检测 UpperBody 层动画==AttackedSource，
+        /// blend 期间 IsAttacked 强制 true 防中途切走。解锁：attacked blend 完触发 onComplete（AttackedComplete）→ m_attackedActive=false；
+        /// 兜底：锁着但 UpperBody 已非 attacked（事件缺失/边界）→ 解锁防卡死。
+        /// 重播：AttackedComplete 置 m_attackedJustCompleted，下帧强制 IsAttacked=false 一帧让规则离开 attacked（path 变），
+        /// 再次受击（m_attackedPending）时重选 attacked（path 变）触发权重渐入重播。
+        /// </remarks>
+        void UpdateAttackedState(AnimationController controller) {
+            // attacked 刚播完：强制 IsAttacked=false 一帧让规则选 null（path 变），UpperBody 停用；
+            // 再次受击（m_attackedPending）时下帧重选 attacked（path 变）触发重播。
+            if (m_attackedJustCompleted) {
+                m_attackedJustCompleted = false;
+                controller.Parameters.SetBool("IsAttacked", false);
+                return;
+            }
+
+            // UpperBody 层当前是否在播 attacked。本方法在 controller.Update 前，读上帧 Update 后状态。
+            // AnimationPlayer 过渡期返回 TargetPlayer，故 transition 切入/稳态/PreservePose 末态均命中。
+            AnimationLayer upperBodyLayer = null;
+            AnimationLayer[] layers = controller.m_layers;
+            if (layers != null) {
+                foreach (AnimationLayer l in layers) {
+                    if (l.Name == "UpperBody") {
+                        upperBodyLayer = l;
+                        break;
+                    }
+                }
+            }
+            // UpperBody 层当前是否在「主动」播 attacked（Animation.Name == AttackedSource）。
+            // 排除停用渐降期：渐降期主 player 仍按 preservePose 采样末态，但层已在淡出，不应视为「在播」
+            // ——否则渐降期误判重新 IsAttacked=true 会打断停用，后仰永久保持。
+            bool upperBodyPlayingAttacked = upperBodyLayer != null
+                && !upperBodyLayer.m_deactivating
+                && upperBodyLayer.AnimationPlayer?.Animation?.Name == AttackedSource;
+
+            bool isAttacked;
+            if (m_attackedActive) {
+                // attacked 正在播放：锁 IsAttacked=true，等 AttackedComplete 事件解锁。不清 pending（备重播）。
+                if (!upperBodyPlayingAttacked) {
+                    // 兜底解锁：attacked 已不在 UpperBody 层（事件缺失/边界）→ 解锁防卡死。
+                    m_attackedActive = false;
+                    isAttacked = m_attackedPending;
+                    m_attackedPending = false;
+                }
+                else {
+                    isAttacked = true;
+                }
+            }
+            else {
+                // 未锁：pending 保持到 attacked 实际开始播放（upperBodyPlayingAttacked=true）才清 + 锁。
+                // 否则 pending 一次性消费后下帧 IsAttacked=false，规则 null 立即停用——attacked 刚切入就被切走（完全无效）。
+                // （与 pickup 不同：pickup 信号 flyingToMe 持续，下帧仍 true；attacked 信号事件单次触发，须保持到开播。）
+                if (upperBodyPlayingAttacked) {
+                    // attacked 已在播：锁 + 清 pending（播放期 IsAttacked=true 由锁保证）。
+                    m_attackedActive = true;
+                    isAttacked = true;
+                    m_attackedPending = false;
+                }
+                else {
+                    // 还没开始播（首帧或规则尚未选它）：IsAttacked=pending，pending 保持直到播放开始。
+                    isAttacked = m_attackedPending;
+                }
+            }
+            controller.Parameters.SetBool("IsAttacked", isAttacked);
+        }
+
+        /// <summary>
         /// 动画事件：处理跳跃/起床动画完成 trigger，推进状态。
         /// </summary>
         public override void HandleAnimationEvent(AnimationController controller, AnimationEvent animationEvent) {
@@ -352,6 +448,12 @@ namespace Game {
                 case "PickUpInterrupt": {
                     // pickup 被打断：解锁（Base 已被高优先级切走，path 已变，无需标记重播）
                     m_pickupActive = false;
+                    break;
+                }
+                case "AttackedComplete": {
+                    // attacked blend 完成：解锁 + 标记刚完成，下帧强制 IsAttacked=false 离开 attacked（path 变）以便重播
+                    m_attackedActive = false;
+                    m_attackedJustCompleted = true;
                     break;
                 }
             }

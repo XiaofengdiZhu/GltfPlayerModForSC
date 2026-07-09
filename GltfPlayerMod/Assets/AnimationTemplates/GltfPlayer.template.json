@@ -15,6 +15,12 @@
             "blendMode": "Override",
             "boneMask": [ "pelvis" ],
             "boneMaskExclude": [ "spine_01" ]
+        },
+        "UpperBody": {
+            "index": 3,
+            "blendMode": "Override",
+            "boneMask": [ "spine_01" ],
+            "boneMaskExclude": [ "upperarm_l", "upperarm_r" ]
         }
     }
 }
