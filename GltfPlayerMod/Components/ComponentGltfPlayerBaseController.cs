@@ -104,8 +104,13 @@ namespace Game {
         private const bool InvertHeadPitch = false;
 
         // 最大转头角度（度，运行时转弧度钳制，防脖子转过头）
-        private const float MaxHeadYawDegrees = 70f;    // 水平左右各 70°
-        private const float MaxHeadPitchDegrees = 50f;  // 上下各 50°
+        private const float MaxHeadYawDegrees = 60f;    // 水平左右各 60°，超过了效果不好
+        private const float MaxHeadPitchDegrees = 80f;  //  垂直最大 80°
+        private const float MinHeadPitchDegrees = -15f; // 垂直最小 -15°，更低效果不好
+
+        // head 俯仰校正（度，向下压）：模型 head face-forward 与 AimAxis(+Z) 有 ~45° pitch 偏移，
+        // 致 IK 把 +Z 对到水平 dir 时 head 实际仰 ~45°。从 pitch 减此值补偿（手测定）。
+        private const float HeadPitchCorrectionDegrees = 45f;
 
         /// <summary>
         /// 当前是否在 ClimbUp 相位（攀爬动画进行中）。供 ComponentGltfPlayerAutoJump 抑制重复触发。
@@ -584,10 +589,14 @@ namespace Game {
             var lookAngles = m_componentCreature.ComponentLocomotion.LookAngles;
             float maxYaw = MathUtils.DegToRad(MaxHeadYawDegrees);
             float maxPitch = MathUtils.DegToRad(MaxHeadPitchDegrees);
+            float minPitch = MathUtils.DegToRad(MinHeadPitchDegrees);
             float yaw = MathUtils.Clamp(
                 lookAngles.X * (InvertHeadYaw ? -1f : 1f), -maxYaw, maxYaw);
+            // pitch 先钳到玩家意图 [MinHeadPitchDegrees, MaxHeadPitchDegrees]（非对称），再减 HeadPitchCorrection
+            // 补偿模型 face-forward 与 AimAxis(+Z) 的 ~45° 偏移（水平视线时 head 实际仰，向下压平）。
             float pitch = MathUtils.Clamp(
-                lookAngles.Y * (InvertHeadPitch ? -1f : 1f), -maxPitch, maxPitch);
+                lookAngles.Y * (InvertHeadPitch ? -1f : 1f), minPitch, maxPitch)
+                - MathUtils.DegToRad(HeadPitchCorrectionDegrees);
 
             // 模型空间视线方向（forward=±Z, up=+Y）
             float cosPitch = MathF.Cos(pitch);
