@@ -195,7 +195,7 @@
               "condition": "[SpeedAbs] > 0.4",
               "animation": {
                 "source": "swim",
-                "speed": "[Speed]"
+                "speed": "[MoveSpeed]"
               }
             },
             {
@@ -235,7 +235,7 @@
               "condition": "[SpeedAbs] > 0.2",
               "animation": {
                 "source": "crouch_walk",
-                "speed": "[Speed] * 1.1"
+                "speed": "[MoveSpeed] * 1.1"
               }
             },
             {
@@ -252,14 +252,14 @@
           "condition": "[SpeedAbs] > [WalkSpeed] * 0.8",
           "animation": {
             "source": "run",
-            "speed": "[Speed] * 0.225"
+            "speed": "[MoveSpeed] * 0.225"
           }
         },
         {
           "condition": "[SpeedAbs] > 0.2",
           "animation": {
             "source": "walk",
-            "speed": "[Speed] * 0.8"
+            "speed": "[MoveSpeed] * 0.8"
           }
         },
         {
@@ -326,6 +326,22 @@
           "animation": null
         }
       ]
+    },
+    "bodyturn": {
+      "layer": "BodyTurn",
+      "rules": [
+        {
+          "condition": "[IsDead] == false && [LieDownFactor] == 0",
+          "animation": {
+            "source": "driver:GltfBodyTurn",
+            "driverArgs": { "YawAxis": "Z" }
+          }
+        },
+        {
+          "condition": "true",
+          "animation": null
+        }
+      ]
     }
   },
   "boneAliases": {
@@ -352,6 +368,7 @@
     "IsBoat": false,
     "IsHoldingMeleeWeapon": false,
     "IsPickingUp": false,
-    "IsAttacked": false
+    "IsAttacked": false,
+    "MoveSpeed": 0.0
   }
 }

@@ -1,3 +1,4 @@
+using System;
 using Engine;
 using Engine.Animation;
 using GameEntitySystem;
@@ -81,6 +82,31 @@ namespace Game {
         // 以便再次受击时重选 attacked 触发权重渐入重播（preservePose 保持后倾末态，path 不变会跳过重切 → 只播一次）。
         private bool m_attackedJustCompleted;
 
+        // ===== head IK 视线追踪 =====
+        // head IK 链名（OnControllerCreated 注册，SyncAnimationParameters 每帧 SetIKAim）
+        private const string HeadIKChain = "Head";
+
+        // head IK 链是否注册成功（OnControllerCreated 首注册 + Sync 兜底补注册）
+        private bool m_headIKRegistered;
+
+        // head aim 平滑是否已禁用（首次 SetIKAim 后置 AimSmoothTime=0，消除默认 150ms 跟随延迟）
+        private bool m_headAimSmoothDisabled;
+
+        // head 局部"脸朝前"轴（经颈弯曲，模型相关）。默认 +Z（game forward）。
+        // 手测调：head 转错方向时改 (1,0,0)/(-1,0,0)/(0,0,-1) 等（见 Task 4）。
+        private Vector3 m_headAimAxis = new Vector3(0f, 0f, 1f);
+
+        // 模型空间 forward 符号：视线方向向量 z 分量符号。默认 +1（forward=+Z），实际 forward=-Z 改 -1。
+        private const int HeadForwardSign = -1;
+
+        // yaw（水平）/pitch（垂直）方向反转（转向反了改 true）
+        private const bool InvertHeadYaw = false;
+        private const bool InvertHeadPitch = false;
+
+        // 最大转头角度（度，运行时转弧度钳制，防脖子转过头）
+        private const float MaxHeadYawDegrees = 70f;    // 水平左右各 70°
+        private const float MaxHeadPitchDegrees = 50f;  // 上下各 50°
+
         /// <summary>
         /// 当前是否在 ClimbUp 相位（攀爬动画进行中）。供 ComponentGltfPlayerAutoJump 抑制重复触发。
         /// </summary>
@@ -119,6 +145,10 @@ namespace Game {
         /// 控制器就绪：写入各参数初始值（规则首帧评估前需已存在）。
         /// </summary>
         public override void OnControllerCreated(AnimationController controller) {
+            // 新 controller：重置 IK 标志，强制重注册。换模型 SetModel 重建 controller，
+            // m_headIKRegistered 仍 true 会使 RegisterHeadIK 早退 → 新 controller 无链 → head IK 静默失效。
+            m_headIKRegistered = false;
+            m_headAimSmoothDisabled = false;
             controller.Parameters.SetString("JumpPhase", m_jumpPhase);
             controller.Parameters.SetBool("IsWakingUp", m_isWakingUp);
             controller.Parameters.SetBool("IsShivering", false);
@@ -126,6 +156,10 @@ namespace Game {
             controller.Parameters.SetBool("IsHoldingMeleeWeapon", false);
             controller.Parameters.SetBool("IsPickingUp", false);
             controller.Parameters.SetBool("IsAttacked", false);
+
+            // 注册 head IK 链（[neck, head]，SingleBoneIK）。幂等去重，换模型自动重注册。
+            // model 偶未就绪则返回 null，由 SyncAnimationParameters 兜底补注册。
+            RegisterHeadIK(controller);
         }
 
         /// <summary>
@@ -138,6 +172,42 @@ namespace Game {
             UpdateMeleeWeaponState(controller);
             UpdatePickupState(controller);
             UpdateAttackedState(controller);
+            UpdateMoveSpeed(controller);
+
+            // head IK：兜底补注册（OnControllerCreated 时 model 未就绪则此处补）+ 每帧设 aim
+            RegisterHeadIK(controller);
+            UpdateHeadIK(controller);
+        }
+
+        /// <summary>
+        /// 带符号水平移动速率 MoveSpeed（前进正/后退负/侧移正），供 walk/run/crouch_walk/swim 控制播放速率。
+        /// </summary>
+        /// <remarks>
+        /// API 基类算的 Speed=Dot(velocity, forward)（前方分量，纯侧移≈0）、SpeedAbs=velocity.Length()（绝对值，无符号）。
+        /// glTF walk/run 速率原用 [Speed]：纯侧移 Speed≈0 → 动画冻结（即便 SpeedAbs 非零已选中 walk）。
+        /// MoveSpeed 用水平速度大小作幅度，符号按移动方向相对前方夹角：明显后退（cos&lt;-0.3，夹角&gt;107°）取负反向播，
+        /// 其余（前进/侧移/静止）取正正向播。后退反向播 walk（腿后摆），侧移正向播（不冻结）。
+        /// </remarks>
+        void UpdateMoveSpeed(AnimationController controller) {
+            var body = m_componentCreature.ComponentBody;
+            if (body == null) {
+                controller.Parameters.SetFloat("MoveSpeed", 0f);
+                return;
+            }
+            Vector3 vel = body.Velocity;
+            Vector3 velXZ = new Vector3(vel.X, 0f, vel.Z);
+            float xzLen = velXZ.Length();
+            // body 水平前方向（XZ 分量）
+            Vector3 fwdFull = Matrix.CreateFromQuaternion(body.Rotation).Forward;
+            Vector3 fwd = new Vector3(fwdFull.X, 0f, fwdFull.Z);
+            float fwdLen = fwd.Length();
+            float cos = 1f;
+            if (xzLen > 0.001f && fwdLen > 0.001f) {
+                cos = Vector3.Dot(velXZ, fwd) / (xzLen * fwdLen);
+            }
+            // 明显后退反向播，其余正向播
+            float sign = cos < -0.3f ? -1f : 1f;
+            controller.Parameters.SetFloat("MoveSpeed", sign * xzLen);
         }
 
         /// <summary>
@@ -456,6 +526,80 @@ namespace Game {
                     m_attackedJustCompleted = true;
                     break;
                 }
+            }
+        }
+
+        /// <summary>
+        /// 注册 head IK 链（[neck, head]，SingleBoneIK，aim 模式）。幂等：已注册跳过。
+        /// </summary>
+        /// <remarks>
+        /// 文档 AnimationAdvancedTopics.md:315-333：OnControllerCreated 注册（每次 controller 创建/重建触发，去重幂等）。
+        /// head 是 neck 子，maxChainLength=2 → 链 [neck, head]，SingleBoneIK 转 root（neck）让 end（head）朝目标。
+        /// AimAxis 是 head 局部"脸朝前"轴（m_headAimAxis），经 endWorldTransform 变换得当前模型空间脸朝向。
+        /// model 就绪由 ComponentModel.SetModel 守卫（OnControllerCreated 时 model 必非空）；
+        /// 链构建失败（骨骼缺失/链<2）返回 null，m_headIKRegistered 保持 false，Sync 兜底重试。
+        /// </remarks>
+        void RegisterHeadIK(AnimationController controller) {
+            if (m_headIKRegistered) {
+                return;
+            }
+            IKChain chain = controller.RegisterAndBuildIKChain(HeadIKChain, "head", "SingleBoneIK", 2);
+            if (chain != null) {
+                chain.AimAxis = m_headAimAxis;
+                m_headIKRegistered = true;
+            }
+        }
+
+        /// <summary>
+        /// 每帧设 head IK 目标方向：LookAngles（水平 yaw + 俯仰 pitch）合成模型空间视线方向。
+        /// </summary>
+        /// <remarks>
+        /// LookAngles.X=水平视线 yaw（相对 body forward），.Y=俯仰 pitch（ComponentLocomotion:380 验证）。
+        /// 模型空间目标方向 = body 初始 forward（+Z * HeadForwardSign）绕 up(+Y) 转 yaw + pitch：
+        ///   dir = (sin(yaw)cos(pitch), sin(pitch), HeadForwardSign * cos(yaw)cos(pitch))
+        /// IK 在层混合后求解（ComputeBoneTransforms:1223），看到 driver 已转的 pelvis → RotationBetweenVectors
+        /// 自动算补偿，head 始终朝视线方向（身体追移动方向时 head 转回视线）。
+        /// 停用（死亡/躺睡/攀爬）→ ClearIKTarget，head 放松回动画姿态。
+        /// 钳制 yaw/pitch 到 MaxHeadYaw/Pitch 防脖子转过头。
+        /// </remarks>
+        void UpdateHeadIK(AnimationController controller) {
+            // 停用条件：死亡/躺下/攀爬时 head 不追踪（与 bodyturn 层停用条件对齐：LieDownFactor==0）。
+            // 用 LieDownFactor 而非 IsSleeping：起身过渡 IsSleeping 已 false 但 LieDownFactor>0（身体还躺），
+            // 此时 IK 激活会 aim 异常。LieDownFactor 由 ComponentHumanModel.SyncAnimationParameters 写入（先于本参与者）。
+            float lieDown = controller.Parameters.GetFloat("LieDownFactor");
+            bool active = m_componentCreature.ComponentHealth.Health > 0f
+                && lieDown == 0f
+                && m_jumpPhase != JumpPhaseClimbUp;
+            if (!active || !m_headIKRegistered) {
+                controller.ClearIKTarget(HeadIKChain);
+                return;
+            }
+
+            var lookAngles = m_componentCreature.ComponentLocomotion.LookAngles;
+            float maxYaw = MathUtils.DegToRad(MaxHeadYawDegrees);
+            float maxPitch = MathUtils.DegToRad(MaxHeadPitchDegrees);
+            float yaw = MathUtils.Clamp(
+                lookAngles.X * (InvertHeadYaw ? -1f : 1f), -maxYaw, maxYaw);
+            float pitch = MathUtils.Clamp(
+                lookAngles.Y * (InvertHeadPitch ? -1f : 1f), -maxPitch, maxPitch);
+
+            // 模型空间视线方向（forward=±Z, up=+Y）
+            float cosPitch = MathF.Cos(pitch);
+            Vector3 dir = new Vector3(
+                MathF.Sin(yaw) * cosPitch,
+                MathF.Sin(pitch),
+                HeadForwardSign * MathF.Cos(yaw) * cosPitch);
+
+            controller.SetIKAim(HeadIKChain, dir, 1.0f);
+
+            // 首次 SetIKAim 后禁用 aim 平滑（默认 AimSmoothTime=0.15s 致 head 落后摄像机 ~150ms）。
+            // 视线追踪需 1:1 即时映射。GetIKTarget 返回 SetIKAim 创建的目标。
+            if (!m_headAimSmoothDisabled) {
+                IKTarget target = controller.GetIKTarget(HeadIKChain);
+                if (target != null) {
+                    target.AimSmoothTime = 0f;
+                }
+                m_headAimSmoothDisabled = true;
             }
         }
     }

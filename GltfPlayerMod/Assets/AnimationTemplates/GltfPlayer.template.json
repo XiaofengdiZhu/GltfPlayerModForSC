@@ -21,6 +21,10 @@
             "blendMode": "Override",
             "boneMask": [ "spine_01" ],
             "boneMaskExclude": [ "upperarm_l", "upperarm_r" ]
+        },
+        "BodyTurn": {
+            "index": 4,
+            "blendMode": "Additive"
         }
     }
 }
