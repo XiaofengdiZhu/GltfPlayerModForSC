@@ -369,6 +369,8 @@
     "IsHoldingMeleeWeapon": false,
     "IsPickingUp": false,
     "IsAttacked": false,
-    "MoveSpeed": 0.0
+    "MoveSpeed": 0.0,
+    "WalkOrderX": 0.0,
+    "WalkOrderY": 0.0
   }
 }

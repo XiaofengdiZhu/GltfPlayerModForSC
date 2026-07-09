@@ -208,6 +208,11 @@ namespace Game {
             // 明显后退反向播，其余正向播
             float sign = cos < -0.3f ? -1f : 1f;
             controller.Parameters.SetFloat("MoveSpeed", sign * xzLen);
+            // 瞬时 WalkOrder（LastWalkOrder）→ WalkOrderX/Y，供 GltfBodyTurnDriver 自算带符号转向角
+            // （Vector2.Angle(UnitY, WalkOrder)，纯后退归零/斜后转向）。不用平滑 HeadingOffset：后者爬升致后退"先转后瞬间转正"。
+            var lastWalk = m_componentCreature.ComponentLocomotion.LastWalkOrder;
+            controller.Parameters.SetFloat("WalkOrderX", lastWalk?.X ?? 0f);
+            controller.Parameters.SetFloat("WalkOrderY", lastWalk?.Y ?? 0f);
         }
 
         /// <summary>
@@ -563,7 +568,8 @@ namespace Game {
         /// 钳制 yaw/pitch 到 MaxHeadYaw/Pitch 防脖子转过头。
         /// </remarks>
         void UpdateHeadIK(AnimationController controller) {
-            // 停用条件：死亡/躺下/攀爬时 head 不追踪（与 bodyturn 层停用条件对齐：LieDownFactor==0）。
+            // 停用条件：死亡/躺下/攀爬时 head 不追踪。比 bodyturn 层多排 ClimbUp（攀爬时 head 放松回动画姿态），
+            // bodyturn 暂不排 ClimbUp（当前仅向前爬；未来 ClimbUp 支持多方向时统一处理）。
             // 用 LieDownFactor 而非 IsSleeping：起身过渡 IsSleeping 已 false 但 LieDownFactor>0（身体还躺），
             // 此时 IK 激活会 aim 异常。LieDownFactor 由 ComponentHumanModel.SyncAnimationParameters 写入（先于本参与者）。
             float lieDown = controller.Parameters.GetFloat("LieDownFactor");
