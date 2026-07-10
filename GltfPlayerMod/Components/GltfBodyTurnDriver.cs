@@ -24,8 +24,9 @@ namespace Game.Animation.Drivers {
     /// 由 ComponentGltfPlayerBaseController 注册的 SingleBoneIK 链在层混合后求解（自动补偿 pelvis 转）。
     /// Additive 混合（AnimationBlender: existing * incoming）→ 全身在 walk/idle 基础上叠加转向，腿/臂摆动动画保留。
     /// 只写 pelvis，其余骨骼该层无值 → blender 跳过；pelvis 子树（spine 链/腿/臂）经骨骼层级继承旋转。
-    /// 旋转轴经 property 可配（JSON driverArgs）：glTF 骨骼局部坐标系因模型/烘焙旋转而异，YawAxis 默认 Y，
-    /// 若表现为侧翻（绕水平轴）说明该骨骼局部 Y 非垂直，改 YawAxis 为 "X" 或 "Z" 试。
+    /// 旋转轴 YawAxis 硬编码默认 Z（本 mod glTF pelvis 局部 Y 非垂直，绕 Y 会侧翻；Z 正确），
+    /// 不可经 JSON driverArgs 配——driverArgs 重设走 AnimationParameters.SetParameter，string 值当 float.Parse
+    /// 抛 FormatException 致 Animate 中断、当帧模型+阴影消失（详见 YawAxis 属性注释）。改轴：编辑默认值后重新编译。
     /// 死亡/躺下由 JSON bodyturn 规则停用本层（condition 排除 IsDead/LieDownFactor），避免乱转。
     /// </remarks>
     public class GltfBodyTurnDriver : IAnimationDriver {
@@ -59,8 +60,12 @@ namespace Game.Animation.Drivers {
         /// <summary>行走指令 Y 分量参数名（前后，LastWalkOrder.Y，瞬时输入）</summary>
         public string WalkOrderYParam { get; set; } = "WalkOrderY";
 
-        /// <summary>转向（yaw）轴："X"/"Y"/"Z"，默认 Y。若侧翻改 X 或 Z</summary>
-        public string YawAxis { get; set; } = "Y";
+        /// <summary>转向（yaw）轴："X"/"Y"/"Z"。本 mod glTF pelvis 局部 Y 非垂直（会侧翻），用 Z。
+        /// 注：YawAxis 是 string 配置属性，不可经 JSON driverArgs 配——ApplyAnimationToLayer 对已存在 driver
+        /// 重设 driverArgs 时全走 AnimationParameters.SetParameter，该方法无 string 分支（JsonElement.String
+        /// 当 float.Parse），传 "Z" 会抛 FormatException 致 Animate 中断、当帧模型+阴影消失（bodyturn 从停用
+        /// 恢复时触发）。故 YawAxis 硬编码默认 Z，改轴改此默认。</summary>
+        public string YawAxis { get; set; } = "Z";
 
         /// <summary>转向幅度比例（1.0=原版全量，纯侧移约 90°；调小可减弱）</summary>
         public float HeadingScale { get; set; } = 1.0f;

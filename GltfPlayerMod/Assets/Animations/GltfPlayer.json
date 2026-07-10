@@ -65,7 +65,6 @@
     "climbup": {
       "source": "ClimbUp_1m_RM",
       "loop": false,
-      "endPhase": 0.75,
       "blendDuration": 0.1,
       "preservePose": true,
       "rootMotion": {
@@ -331,10 +330,9 @@
       "layer": "BodyTurn",
       "rules": [
         {
-          "condition": "[IsDead] == false && [LieDownFactor] == 0",
+          "condition": "[IsDead] == false && [LieDownFactor] == 0 && [JumpPhase] != 'ClimbUp'",
           "animation": {
-            "source": "driver:GltfBodyTurn",
-            "driverArgs": { "YawAxis": "Z" }
+            "source": "driver:GltfBodyTurn"
           }
         },
         {

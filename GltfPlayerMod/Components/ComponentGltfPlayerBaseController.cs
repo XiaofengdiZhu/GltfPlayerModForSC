@@ -233,7 +233,7 @@ namespace Game {
         /// - 落地边沿：净下落 &gt; JumpLandMinDropHeight → Land；否则 Ground（同高/短掉落不播 Land）
         /// - Jump_Start 播完（onComplete trigger "JumpStartComplete"）→ Loop
         /// - Jump_Land 播完（onComplete trigger "JumpLandComplete"）→ Ground
-        /// - AutoJump 越障（ConsumeClimbUpPending）→ ClimbUp，期间保持不被离地/落地边沿覆盖
+        /// - AutoJump 越障（ConsumeClimbUp(out climbDir)）→ ClimbUp，body.Rotation 即时转朝爬向；期间保持不被离地/落地边沿覆盖
         /// - ClimbUp_1m_RM 播完（onComplete trigger "ClimbUpComplete"）→ Ground
         /// - 进水/飞行/梯子/骑乘/死亡 → 重置 Ground（避免出水/出飞行落地误播 Land）
         /// ClimbUp 期间 body 物理副作用（禁重力/碰撞/输入移动）由 API ApplyRootMotionPhysics 据 JSON physics 块自动应用。
@@ -252,8 +252,9 @@ namespace Game {
                 || m_componentRider?.Mount != null
                 || m_componentCreature.ComponentHealth.Health <= 0;
 
-            // AutoJump 越障标志（每帧消费清除，避免残留误触发后续离地）
-            bool climbUpTriggered = m_componentAutoJump != null && m_componentAutoJump.ConsumeClimbUpPending();
+            // AutoJump 越障标志（每帧消费清除，避免残留误触发后续离地）；climbDir=世界水平爬向
+            Vector3 climbDir = default;
+            bool climbUpTriggered = m_componentAutoJump != null && m_componentAutoJump.ConsumeClimbUp(out climbDir);
 
             if (overridden) {
                 // 进水/飞行/梯子/骑乘/死亡：重置相位
@@ -262,6 +263,17 @@ namespace Game {
             else if (climbUpTriggered) {
                 // AutoJump 越障：进 ClimbUp 相位，root motion Override 接管位移
                 m_jumpPhase = JumpPhaseClimbUp;
+                // 多向转体：body.Rotation 转朝爬向 climbDir，同一前向 clip 即物理移向障碍
+                // （TranslationApplier 用 body.Rotation 重定向根运动 localVel→world）。
+                // 纯前向（Dot≈1）不转，保持原前爬行为；爬完留向（不恢复，玩家鼠标自转）。
+                // 时序：本 Sync 在 controller.Update 前、ComponentModel 根运动前 → 当帧根运动即见新 yaw。
+                Vector3 fwdF = new Vector3(componentBody.Matrix.Forward.X, 0f, componentBody.Matrix.Forward.Z);
+                if (fwdF.LengthSquared() > 1e-6f && Vector3.Dot(climbDir, Vector3.Normalize(fwdF)) < 0.999f) {
+                    // 本引擎 body forward=-Z 绕 +Y：forward=(-sin yaw, 0, -cos yaw)。
+                    // 要 forward 对齐 climbDir → yaw=atan2(-climbDir.X, -climbDir.Z)（直接反解，无符号歧义）。
+                    float targetYaw = MathF.Atan2(-climbDir.X, -climbDir.Z);
+                    componentBody.Rotation = Quaternion.CreateFromAxisAngle(Vector3.UnitY, targetYaw);
+                }
             }
             else if (m_jumpPhase == JumpPhaseClimbUp) {
                 // 攀爬中：保持 ClimbUp，仅 onComplete "ClimbUpComplete" 推进到 Ground
@@ -573,8 +585,8 @@ namespace Game {
         /// 钳制 yaw/pitch 到 MaxHeadYaw/Pitch 防脖子转过头。
         /// </remarks>
         void UpdateHeadIK(AnimationController controller) {
-            // 停用条件：死亡/躺下/攀爬时 head 不追踪。比 bodyturn 层多排 ClimbUp（攀爬时 head 放松回动画姿态），
-            // bodyturn 暂不排 ClimbUp（当前仅向前爬；未来 ClimbUp 支持多方向时统一处理）。
+            // 停用条件：死亡/躺下/攀爬时 head 不追踪。ClimbUp 期 head 与 bodyturn 两层皆停（JSON bodyturn condition 已排 ClimbUp），
+            // head 另外排死亡/躺下；攀爬时 head 放松回动画姿态。
             // 用 LieDownFactor 而非 IsSleeping：起身过渡 IsSleeping 已 false 但 LieDownFactor>0（身体还躺），
             // 此时 IK 激活会 aim 异常。LieDownFactor 由 ComponentHumanModel.SyncAnimationParameters 写入（先于本参与者）。
             float lieDown = controller.Parameters.GetFloat("LieDownFactor");
