@@ -82,6 +82,35 @@ namespace Game {
         // 以便再次受击时重选 attacked 触发权重渐入重播（preservePose 保持后倾末态，path 不变会跳过重切 → 只播一次）。
         private bool m_attackedJustCompleted;
 
+        // ===== 近战攻击（动画驱动，Activity 层）=====
+        // attack source 名（须与 GltfPlayer.json attack_cross/attack_jab 别名 source 一致；换动画须同步改）
+        private const string AttackCrossSource = "Punch_Cross"; // 右手（parity 0）
+        private const string AttackJabSource = "Punch_Jab";     // parity 1
+
+        // 攻击状态机：Idle（无攻击）→Winding（pending 启动，等 MeleeImpact）→Impact（命中后）→Idle（MeleeAttackComplete）
+        private enum AttackState { Idle, Winding, Impact }
+        private AttackState m_attackState = AttackState.Idle;
+
+        // 左右手交替：0=Punch_Cross 右手，1=Punch_Jab；MeleeAttackComplete 时翻转（下次另一手）。首次 0=右手先。
+        private int m_attackParity;
+
+        // attack 锁：true=Activity 层正在播 attack。置锁靠检测层动画==Punch_Cross/Jab（仿 m_attackedActive）。
+        // 兜底解锁靠 MeleeAttackComplete latch（m_attackJustCompleted）。防 blend 期 pending 抖动中途切走。
+        private bool m_attackActive;
+
+        // attack 刚播完：MeleeAttackComplete 置位，下帧强制 IsAttacking=false 让规则离开 attack（path 变）以便重播/交还。
+        private bool m_attackJustCompleted;
+
+        // 攻击连击模式（MeleeImpact 事件 Data 解析）。
+        private enum AttackComboMode {
+            // 等 MeleeAttackComplete 事件才接受下次攻击（默认）。
+            Complete,
+            // MeleeImpact 后即可重触发（parity 翻转下一手）。
+            Impact,
+        }
+
+        private AttackComboMode m_attackComboMode = AttackComboMode.Complete;
+
         // ===== head IK 视线追踪 =====
         // head IK 链名（OnControllerCreated 注册，SyncAnimationParameters 每帧 SetIKAim）
         private const string HeadIKChain = "Head";
@@ -161,6 +190,13 @@ namespace Game {
             controller.Parameters.SetBool("IsHoldingMeleeWeapon", false);
             controller.Parameters.SetBool("IsPickingUp", false);
             controller.Parameters.SetBool("IsAttacked", false);
+            controller.Parameters.SetBool("IsAttacking", false);
+            controller.Parameters.SetFloat("AttackComboParity", 0f);
+            // 配置 Attack 走 pending（延迟到 MeleeImpact 事件触发伤害）。仅 glTF 玩家有此 controller；
+            // dae/AI 的 miner 无 controller → m_requiresPending 恒 None → 原版立即执行。每次 controller 重建（换模型）重设，幂等。
+            if (m_componentMiner != null) {
+                m_componentMiner.SetRequiresPending(ComponentMiner.PendingAction.Attack);
+            }
 
             // 注册 head IK 链（[neck, head]，SingleBoneIK）。幂等去重，换模型自动重注册。
             // model 偶未就绪则返回 null，由 SyncAnimationParameters 兜底补注册。
@@ -177,6 +213,7 @@ namespace Game {
             UpdateMeleeWeaponState(controller);
             UpdatePickupState(controller);
             UpdateAttackedState(controller);
+            UpdateAttackState(controller);
             UpdateMoveSpeed(controller);
 
             // head IK：兜底补注册（OnControllerCreated 时 model 未就绪则此处补）+ 每帧设 aim
@@ -518,6 +555,89 @@ namespace Game {
         }
 
         /// <summary>
+        /// 攻击动作（动画驱动，Activity 层）：读 miner.IsPending(Attack) → IsAttacking 触发 attack_cross/attack_jab 交替。
+        /// Activity 层 attack 别名 events 灌 MeleeImpact@0.3；MeleeImpact 事件（HandleAnimationEvent）调 miner.ExecuteHit。
+        /// </summary>
+        /// <remarks>
+        /// 与 UpdateAttackedState 同构（锁/latch/层查）。锁语义=「attack 正在 Activity 层播放」，置锁靠检测层动画
+        /// ==Punch_Cross/Jab（排除停用渐降期 m_deactivating），防 blend 期 IsAttacking 抖动。
+        /// 状态机：Idle→Winding（pending 启动）→Impact（MeleeImpact 事件设）→Idle（MeleeAttackComplete 事件设 justCompleted）。
+        /// parity：0=Punch_Cross 右手，1=Punch_Jab，MeleeAttackComplete 时翻转（当前攻击期间稳定，完成后翻为下次）。
+        /// comboMode=impact：Impact 态遇新 pending 立即重触发（parity 翻转下一手）；complete：等 MeleeAttackComplete。
+        /// 重播：MeleeAttackComplete 置 m_attackJustCompleted，下帧强制 IsAttacking=false 让规则离开 attack（path 变），
+        /// 下次 pending 重选 attack（path 变）触发重切重播（preservePose 保末态，path 不变会跳过重切→只播一次）。
+        /// glTF 攻击不 Poke（chop 留给 dig）；HitInterval 硬底线在 miner.Hit 入口不变。
+        /// </remarks>
+
+        void UpdateAttackState(AnimationController controller) {
+            // attack 刚播完：强制 IsAttacking=false 一帧让规则选 null（path 变），Activity 停用；
+            // 下次 pending（miner.IsPending(Attack)）时下帧重选 attack（path 变）触发重播。
+            if (m_attackJustCompleted) {
+                m_attackJustCompleted = false;
+                m_attackState = AttackState.Idle;
+                controller.Parameters.SetBool("IsAttacking", false);
+                controller.Parameters.SetFloat("AttackComboParity", m_attackParity);
+                return;
+            }
+
+            bool pending = m_componentMiner != null && m_componentMiner.IsPending(ComponentMiner.PendingAction.Attack);
+
+            // Activity 层当前是否在播 attack。本方法在 controller.Update 前，读上帧 Update 后状态。
+            // AnimationPlayer 过渡期返回 TargetPlayer，故 transition 切入/稳态均命中；排除停用渐降期防误判。
+            AnimationLayer activityLayer = null;
+            AnimationLayer[] layers = controller.m_layers;
+            if (layers != null) {
+                foreach (AnimationLayer l in layers) {
+                    if (l.Name == "Activity") {
+                        activityLayer = l;
+                        break;
+                    }
+                }
+            }
+            bool activityPlayingAttack = activityLayer != null
+                && !activityLayer.m_deactivating
+                && (activityLayer.AnimationPlayer?.Animation?.Name == AttackCrossSource
+                    || activityLayer.AnimationPlayer?.Animation?.Name == AttackJabSource);
+
+            // 状态机推进
+            switch (m_attackState) {
+                case AttackState.Idle:
+                    if (pending) {
+                        m_attackState = AttackState.Winding;
+                    }
+                    break;
+                case AttackState.Winding:
+                    // 等 MeleeImpact 事件（HandleAnimationEvent）→ Impact；未 impact 前缓冲新 pending（不重播）。
+                    break;
+                case AttackState.Impact:
+                    if (m_attackComboMode == AttackComboMode.Impact && pending) {
+                        // impact 模式：impact 后即可重触发（parity 翻转下一手）；HitInterval 硬底线仍在 miner.Hit 入口。
+                        m_attackParity ^= 1;
+                        m_attackState = AttackState.Winding;
+                    }
+                    // complete 模式：等 MeleeAttackComplete 事件 → justCompleted latch → Idle。
+                    break;
+            }
+
+            // 锁：开播（Activity 见 attack）即锁防 blend 期掉。
+            if (activityPlayingAttack) {
+                m_attackActive = true;
+            }
+            else if (m_attackActive) {
+                // 兜底解锁：attack 离开 Activity 层但 MeleeAttackComplete 未到（被打断无 onInterrupt / 换模型 controller 重建字段残留）
+                // → 重置锁 + 状态机防 IsAttacking 卡死。仿 UpdateAttackedState:520-527 / UpdatePickupState:451-458 兜底。
+                // 安全：Winding 蓄力期（pending 已设但 Activity 尚未切入）m_attackActive 仍 false → 此分支不触发，isAttacking 经状态机保持 true 不掉。
+                m_attackActive = false;
+                m_attackState = AttackState.Idle;
+                m_componentMiner?.ClearIsPending(ComponentMiner.PendingAction.Attack);  // 同步清 miner pending 防永久锁（否则入口排他锁卡死后续动作）
+            }
+
+            bool isAttacking = m_attackState != AttackState.Idle || m_attackActive;
+            controller.Parameters.SetBool("IsAttacking", isAttacking);
+            controller.Parameters.SetFloat("AttackComboParity", m_attackParity);
+        }
+
+        /// <summary>
         /// 动画事件：处理跳跃/起床动画完成 trigger，推进状态。
         /// </summary>
         public override void HandleAnimationEvent(AnimationController controller, AnimationEvent animationEvent) {
@@ -546,6 +666,34 @@ namespace Game {
                     // attacked blend 完成：解锁 + 标记刚完成，下帧强制 IsAttacked=false 离开 attacked（path 变）以便重播
                     m_attackedActive = false;
                     m_attackedJustCompleted = true;
+                    break;
+                }
+                case "MeleeImpact": {
+                    // Data: "targetMode|comboMode"（如 "pending|complete"/"reraycast|impact"）；缺省 pending|complete。
+                    // ApplyAnimationEvents（AnimationController.cs）把 alias events 的 Data 直传本事件 Parameter。
+                    string data = animationEvent.Parameter as string;
+                    var mode = ComponentMiner.TargetMode.Pending;
+                    AttackComboMode combo = AttackComboMode.Complete;
+                    if (!string.IsNullOrEmpty(data)) {
+                        string[] parts = data.Split('|');
+                        if (parts.Length > 0 && parts[0].Equals("reraycast", StringComparison.OrdinalIgnoreCase)) {
+                            mode = ComponentMiner.TargetMode.Reraycast;
+                        }
+                        if (parts.Length > 1 && parts[1].Equals("impact", StringComparison.OrdinalIgnoreCase)) {
+                            combo = AttackComboMode.Impact;
+                        }
+                    }
+                    m_attackComboMode = combo;
+                    m_attackState = AttackState.Impact;
+                    m_componentMiner?.ExecuteHit(mode);
+                    break;
+                }
+                case "MeleeAttackComplete": {
+                    // 攻击动画完成：翻转 parity（下次另一手）+ 标记刚完成（下帧强制 IsAttacking=false 交还/重播）。
+                    int __oldParity = m_attackParity;
+                    m_attackParity ^= 1;
+                    m_attackActive = false;
+                    m_attackJustCompleted = true;
                     break;
                 }
             }

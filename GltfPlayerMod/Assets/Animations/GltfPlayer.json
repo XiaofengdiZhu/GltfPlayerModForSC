@@ -146,6 +146,26 @@
       "loop": true,
       "blendDuration": 0.2
     },
+    "attack_cross": {
+      "source": "Punch_Cross",
+      "loop": false,
+      "preservePose": true,
+      "blendDuration": 0.1,
+      "events": [
+        { "time": 0.3, "name": "MeleeImpact", "data": "pending|complete" }
+      ],
+      "onComplete": { "type": "trigger", "name": "MeleeAttackComplete" }
+    },
+    "attack_jab": {
+      "source": "Punch_Jab",
+      "loop": false,
+      "preservePose": true,
+      "blendDuration": 0.1,
+      "events": [
+        { "time": 0.3, "name": "MeleeImpact", "data": "pending|complete" }
+      ],
+      "onComplete": { "type": "trigger", "name": "MeleeAttackComplete" }
+    },
     "ride_boat": {
       "source": "Meditate",
       "loop": true,
@@ -287,6 +307,14 @@
       "layer": "Activity",
       "rules": [
         {
+          "condition": "[IsAttacking] == true && [AttackComboParity] == 0",
+          "animation": "attack_cross"
+        },
+        {
+          "condition": "[IsAttacking] == true && [AttackComboParity] == 1",
+          "animation": "attack_jab"
+        },
+        {
           "condition": "[PokingPhase] > 0.0",
           "animation": "chop"
         },
@@ -367,6 +395,8 @@
     "IsHoldingMeleeWeapon": false,
     "IsPickingUp": false,
     "IsAttacked": false,
+    "IsAttacking": false,
+    "AttackComboParity": 0.0,
     "MoveSpeed": 0.0,
     "WalkOrderX": 0.0,
     "WalkOrderY": 0.0
