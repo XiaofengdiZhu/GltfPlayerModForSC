@@ -147,7 +147,7 @@
       "loop": true,
       "blendDuration": 0.3
     },
-    "attack_cross": {
+    "punch_right": {
       "source": "Punch_Cross",
       "loop": false,
       "preservePose": true,
@@ -157,7 +157,7 @@
       ],
       "onComplete": { "type": "trigger", "name": "MeleeAttackComplete" }
     },
-    "attack_jab": {
+    "punch_left": {
       "source": "Punch_Jab",
       "loop": false,
       "preservePose": true,
@@ -187,7 +187,7 @@
       "onComplete": { "type": "trigger", "name": "DigLoopComplete" },
       "onInterrupt": { "type": "trigger", "name": "DigInterrupt" }
     },
-    "dig_chop": {
+    "dig_general": {
       "source": "TreeChopping_Loop",
       "loop": false,
       "preservePose": true,
@@ -195,7 +195,7 @@
       "onComplete": { "type": "trigger", "name": "DigLoopComplete" },
       "onInterrupt": { "type": "trigger", "name": "DigInterrupt" }
     },
-    "place_water": {
+    "place_seed": {
       "source": "Farm_Watering",
       "loop": false,
       "preservePose": true,
@@ -203,7 +203,7 @@
       "onComplete": { "type": "trigger", "name": "PlaceLoopComplete" },
       "onInterrupt": { "type": "trigger", "name": "PlaceLoopComplete" }
     },
-    "place_chop": {
+    "place_general": {
       "source": "TreeChopping_Loop",
       "loop": false,
       "preservePose": true,
@@ -211,7 +211,7 @@
       "onComplete": { "type": "trigger", "name": "PlaceLoopComplete" },
       "onInterrupt": { "type": "trigger", "name": "PlaceLoopComplete" }
     },
-    "use_chop": {
+    "use_general": {
       "source": "TreeChopping_Loop",
       "loop": false,
       "preservePose": true,
@@ -242,19 +242,19 @@
       "onComplete": { "type": "trigger", "name": "InteractComplete" },
       "onInterrupt": { "type": "trigger", "name": "InteractComplete" }
     },
-    "aim_pistol": {
+    "aim_musket": {
       "source": "Pistol_Idle_Loop",
       "loop": true,
       "blendDuration": 0.15
     },
-    "shoot_pistol": {
+    "shoot_musket": {
       "source": "Pistol_Shoot",
       "loop": false,
       "preservePose": true,
       "blendDuration": 0.05,
       "onComplete": { "type": "trigger", "name": "ShootComplete" }
     },
-    "throw_overhand": {
+    "throw_general": {
       "source": "OverhandThrow",
       "loop": false,
       "preservePose": true,
@@ -377,7 +377,7 @@
             "speed": "[MoveSpeed] * 0.8"
           }
         },
-        { "condition": "[IsThrowing]", "animation": "throw_overhand" },
+        { "condition": "[IsThrowing]", "animation": "throw_general" },
         { "condition": "[IsDigging] && [IsDiggingPlant]", "animation": "dig_harvest" },
         {
           "condition": "[IsPickingUp]",
@@ -414,23 +414,23 @@
     "activity": {
       "layer": "Activity",
       "rules": [
-        { "condition": "[IsFiring]", "animation": "shoot_pistol" },
+        { "condition": "[IsFiring]", "animation": "shoot_musket" },
         { "condition": "[IsInteracting] && [IsInteractChest]", "animation": "interact_chest" },
         { "condition": "[IsInteracting]", "animation": "interact_general" },
-        { "condition": "[IsPlacing] && [IsPlacingPlant]", "animation": "place_water" },
-        { "condition": "[IsPlacing]", "animation": "place_chop" },
-        { "condition": "[IsUsing]", "animation": "use_chop" },
+        { "condition": "[IsPlacing] && [IsPlacingPlant]", "animation": "place_seed" },
+        { "condition": "[IsPlacing]", "animation": "place_general" },
+        { "condition": "[IsUsing]", "animation": "use_general" },
         { "condition": "[IsDigging] && [IsDiggingPlant]", "animation": null },
-        { "condition": "[IsDigging]", "animation": "dig_chop" },
-        { "condition": "[IsAiming]", "animation": "aim_pistol" },
-        { "condition": "[IsThrowingUpperBody]", "animation": "throw_overhand" },
+        { "condition": "[IsDigging]", "animation": "dig_general" },
+        { "condition": "[IsAiming]", "animation": "aim_musket" },
+        { "condition": "[IsThrowingUpperBody]", "animation": "throw_general" },
         {
           "condition": "[IsAttacking] && [AttackComboParity] == 0",
-          "animation": "attack_cross"
+          "animation": "punch_right"
         },
         {
           "condition": "[IsAttacking] && [AttackComboParity] == 1",
-          "animation": "attack_jab"
+          "animation": "punch_left"
         },
         {
           "condition": "true",

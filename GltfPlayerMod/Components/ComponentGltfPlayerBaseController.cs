@@ -93,7 +93,7 @@ namespace Game {
         private bool m_attackedJustCompleted;
 
         // ===== 近战攻击（动画驱动，Activity 层）=====
-        // attack source 名（须与 GltfPlayer.json attack_cross/attack_jab 别名 source 一致；换动画须同步改）
+        // attack source 名（须与 GltfPlayer.json punch_right/punch_left 别名 source 一致；换动画须同步改）
         private const string AttackCrossSource = "Punch_Cross"; // 右手（parity 0）
         private const string AttackJabSource = "Punch_Jab";     // parity 1
 
@@ -140,7 +140,7 @@ namespace Game {
         private bool m_interactChest;          // pending 目标分类（用公开 InteractPendingValue 取按下时存的目标）
         private bool m_interactJustCompleted;
 
-        // fire/throw：ProjectileAdded 事件 latch（仅弓→fire）；投掷物走 Aim pending（IsPending(Aim) 触发 throw_overhand）。
+        // fire/throw：ProjectileAdded 事件 latch（仅弓→fire）；投掷物走 Aim pending（IsPending(Aim) 触发 throw_general）。
         private bool m_projectileFirePending;  // OnProjectileAdded 置位（仅本玩家，持弓/弩/火枪）
         private bool m_throwRequest;           // Base 路径待播（首帧设，次帧判 Base 是否播 throw）
         private bool m_throwActive;            // Base 路径播放锁（开播到 ThrowComplete/打断兜底）
@@ -242,7 +242,7 @@ namespace Game {
             if (projectile.OwnerEntity != Entity) {
                 return;
             }
-            // 仅弓/弩/火枪走 ProjectileAdded 触发 fire（松手即抛）。投掷物走 Aim pending（throw_overhand 播 25% 才抛），
+            // 仅弓/弩/火枪走 ProjectileAdded 触发 fire（松手即抛）。投掷物走 Aim pending（throw_general 播 25% 才抛），
             // 25% 后 FireProjectile 也触发本事件——此处忽略投掷物防重触 throw（pending 路径不依赖此事件）。
             int blockValue = m_componentMiner != null ? m_componentMiner.ActiveBlockValue : 0;
             Block block = blockValue != 0 ? BlocksManager.Blocks[Terrain.ExtractContents(blockValue)] : null;
@@ -294,7 +294,7 @@ namespace Game {
                 m_componentMiner.SetRequiresPending(ComponentMiner.PendingAction.Place);
                 m_componentMiner.SetRequiresPending(ComponentMiner.PendingAction.Use);
                 m_componentMiner.SetRequiresPending(ComponentMiner.PendingAction.Interact);
-                // Aim pending：投掷物松手不立即抛，存 pending 等 throw_overhand 播 25%（AimImpact event）/被打断时 ExecuteAim 抛。
+                // Aim pending：投掷物松手不立即抛，存 pending 等 throw_general 播 25%（AimImpact event）/被打断时 ExecuteAim 抛。
                 // 仅投掷物（API ComponentMiner.Aim 拦截处按 ThrowableBlockBehavior 判定）；弓/弩/火枪不 pending（松手即抛走 ProjectileAdded）。
                 m_componentMiner.SetRequiresPending(ComponentMiner.PendingAction.Aim);
             }
@@ -615,10 +615,7 @@ namespace Game {
                 int blockValue = m_componentMiner.ActiveBlockValue;
                 if (blockValue != 0) {
                     Block block = BlocksManager.Blocks[Terrain.ExtractContents(blockValue)];
-                    holdingMeleeWeapon = block is WoodenClubBlock
-                        || block is StoneClubBlock
-                        || block is SpearBlock
-                        || block is MacheteBlock;
+                    holdingMeleeWeapon = block is WoodenClubBlock or StoneClubBlock or SpearBlock or MacheteBlock;
                 }
             }
             controller.Parameters.SetBool("IsHoldingMeleeWeapon", holdingMeleeWeapon);
@@ -765,7 +762,7 @@ namespace Game {
         }
 
         /// <summary>
-        /// 攻击动作（动画驱动，Activity 层）：读 miner.IsPending(Attack) → IsAttacking 触发 attack_cross/attack_jab 交替。
+        /// 攻击动作（动画驱动，Activity 层）：读 miner.IsPending(Attack) → IsAttacking 触发 punch_right/punch_left 交替。
         /// Activity 层 attack 别名 events 灌 MeleeImpact@0.3；MeleeImpact 事件（HandleAnimationEvent）调 miner.ExecuteHit。
         /// </summary>
         /// <remarks>
@@ -848,14 +845,14 @@ namespace Game {
         }
 
         /// <summary>
-        /// Dig 动作（cosmetic，Activity 层）：PokingPhase>0 判挖掘中。目标 CrossBlock（草/花等 X 形植被）→ dig_harvest（Farm_Harvest），
-        /// 否则 dig_chop（TreeChopping_Loop）。Dig 不走 pending（连续渐进），vanilla ComponentMiner 自行挖掘，动画纯装饰。
+        /// Dig 动作（cosmetic，Activity 层）：PokingPhase>0 判挖掘中。目标 草/花等植物 → dig_harvest（Farm_Harvest），
+        /// 否则 dig_general（TreeChopping_Loop）。Dig 不走 pending（连续渐进），vanilla ComponentMiner 自行挖掘，动画纯装饰。
         /// 播完语义（仿 attack/attacked）：dig_harvest/chop loop=false + onComplete(DigLoopComplete)。m_digActive 锁保持播放中 IsDigging=true，
         /// 停止挖掘（PokingPhase 归零）后 anim 继续到 onComplete 才停（不截断）。onComplete→justCompleted→SetBool false 一帧（path 变）→
         /// 仍挖则下帧重选重播，停则停用。植物瞬毁 DigCellFace 仅首帧有效 → m_digPlantCached 缓存，PokingPhase 期沿用。
         /// </summary>
         bool m_digPlantCached;  // dig 目标植物分类缓存：DigCellFace 有效时更新，植物瞬毁仅首帧有效，PokingPhase 期沿用
-        bool m_digActive;  // dig 播放锁：挖中（PokingPhase>0）置 true，停挖后保持到 DigLoopComplete（dig_chop 播完）才停。避免停挖瞬断 anim
+        bool m_digActive;  // dig 播放锁：挖中（PokingPhase>0）置 true，停挖后保持到 DigLoopComplete（dig_general 播完）才停。避免停挖瞬断 anim
         bool m_digJustCompleted;  // dig 刚播完（DigLoopComplete 事件）：下帧强制 IsDigging=false 一帧（path 变）重播/停
 
         void UpdateDigState(AnimationController controller) {
@@ -872,10 +869,10 @@ namespace Game {
 
             bool digging = m_componentMiner != null && m_componentMiner.PokingPhase > 0f;
 
-            // place/use/interact/fire/throw 期间压制 dig：dig_chop 与 place_chop/use_chop/interact_*/shoot_pistol 同在 Activity 层（Override 互斥），
-            // throw_overhand 在 Base 层与 dig_harvest 同层；抢层时 dig（Activity 的 dig_chop 或 Base 的 dig_harvest）被遮蔽，
+            // place/use/interact/fire/throw 期间压制 dig：dig_general 与 place_general/use_general/interact_*/shoot_musket 同在 Activity 层（Override 互斥），
+            // throw_general 在 Base 层与 dig_harvest 同层；抢层时 dig（Activity 的 dig_general 或 Base 的 dig_harvest）被遮蔽，
             // 跨层抢不触发 onInterrupt → 既无 DigLoopComplete 也无 DigInterrupt 清 m_digActive，锁卡住 → IsDigging 残留致 dig 重播。被压制时直接清 m_digActive。
-            // aimPending：投掷物 Aim pending 期（throw_overhand 尚未开播的首帧）也压制，防 OnAim Completed 的 Poke(false) 残留 PokingPhase 触发 dig_chop。
+            // aimPending：投掷物 Aim pending 期（throw_general 尚未开播的首帧）也压制，防 OnAim Completed 的 Poke(false) 残留 PokingPhase 触发 dig_general。
             bool aimPending = m_componentMiner != null && m_componentMiner.IsPending(ComponentMiner.PendingAction.Aim);
             bool digSuppressed = aimPending
                               || controller.Parameters.GetBool("IsPlacing")
@@ -897,7 +894,7 @@ namespace Game {
                 CellFace c = m_componentMiner.DigCellFace.Value;
                 int blockValue = m_subsystemTerrain.Terrain.GetCellValue(c.X, c.Y, c.Z);
                 Block block = BlocksManager.Blocks[Terrain.ExtractContents(blockValue)];
-                m_digPlantCached = block is CrossBlock;
+                m_digPlantCached = block is TallGrassBlock or RyeBlock or DryBushBlock or LargeDryBushBlock or SaplingBlock or CottonBlock;
             }
 
             // IsDigging：未被 place/use/interact 压制时，挖中（PokingPhase>0）或播放锁中（停挖后 anim 播完前保持）
@@ -908,8 +905,8 @@ namespace Game {
 
         /// <summary>
         /// Place 动作（Activity 层）：pending 即时派发。检测 IsPending(Place) 当帧即 ExecutePlace(Pending)（放置+清 pending），
-        /// 方块立即生效（1 帧延迟）；IsPlacing=true 触发 place 循环动画。持有 SaplingBlock/SeedsBlock → place_water（Farm_Watering），
-        /// 否则 place_chop（TreeChopping_Loop）。循环末（PlaceLoopComplete）：播放中又收到新 place → 续播；否则停。
+        /// 方块立即生效（1 帧延迟）；IsPlacing=true 触发 place 循环动画。持有 SaplingBlock/SeedsBlock → place_seed（Farm_Watering），
+        /// 否则 place_general（TreeChopping_Loop）。循环末（PlaceLoopComplete）：播放中又收到新 place → 续播；否则停。
         /// </summary>
         void UpdatePlaceState(AnimationController controller) {
             if (m_placeJustCompleted) {
@@ -933,7 +930,7 @@ namespace Game {
 
         /// <summary>
         /// Use 动作（Activity 层）：pending 即时派发（同 UpdatePlaceState）。ExecuteUse(Pending) 当帧生效。
-        /// 普通方块统一 use_chop（TreeChopping_Loop）。
+        /// 普通方块统一 use_general（TreeChopping_Loop）。
         /// </summary>
         void UpdateUseState(AnimationController controller) {
             if (m_useJustCompleted) {
@@ -975,7 +972,7 @@ namespace Game {
 
         /// <summary>
         /// Aim 动作（cosmetic hold，Activity 层）：轮询 ComponentPlayer.m_aim.HasValue + 持有 Bow/Crossbow/Musket。
-        /// 瞄准中 → aim_pistol（Pistol_Idle_Loop）循环；松手/换武器即停。开火动画由 UpdateFireState（ProjectileAdded）触发。
+        /// 瞄准中 → aim_musket（Pistol_Idle_Loop）循环；松手/换武器即停。开火动画由 UpdateFireState（ProjectileAdded）触发。
         /// </summary>
         void UpdateAimState(AnimationController controller) {
             bool aiming = false;
@@ -991,7 +988,7 @@ namespace Game {
 
         /// <summary>
         /// 开火 latch 消费（Activity fire）：OnProjectileAdded 置 m_projectileFirePending（仅本玩家持弓/弩/火枪）→ IsFiring=true
-        /// （Activity shoot_pistol / Pistol_Shoot）。投掷物不走此（Aim pending 驱动 UpdateThrowState）。ShootComplete 事件下帧停。
+        /// （Activity shoot_musket / Pistol_Shoot）。投掷物不走此（Aim pending 驱动 UpdateThrowState）。ShootComplete 事件下帧停。
         /// </summary>
         void UpdateFireState(AnimationController controller) {
             if (m_fireJustCompleted) {
@@ -999,7 +996,7 @@ namespace Game {
                 controller.Parameters.SetBool("IsFiring", false);
                 return;
             }
-            // 仅弓/弩/火枪（OnProjectileAdded 已过滤）。投掷物不走此（Aim pending 驱动 throw_overhand，见 UpdateThrowState）。
+            // 仅弓/弩/火枪（OnProjectileAdded 已过滤）。投掷物不走此（Aim pending 驱动 throw_general，见 UpdateThrowState）。
             if (m_projectileFirePending) {
                 m_projectileFirePending = false;
                 controller.Parameters.SetBool("IsFiring", true);
@@ -1008,8 +1005,8 @@ namespace Game {
 
         /// <summary>
         /// 投掷动作（双路径状态机）：IsPending(Aim)（投掷物松手，API ComponentMiner.Aim 拦截存 pending）→ 首帧按"是否站定地面空闲"选路径：
-        /// 站定地面空闲（IsOnGround + SpeedAbs≤0.2 + 非蹲/睡/水/骑/死）→ Base 层全身 throw_overhand（IsThrowing）；
-        /// 其余（移动/飞行/蹲/蹲走/游泳/骑乘等）→ Activity 层上半身 throw_overhand（IsThrowingUpperBody，boneMask=spine_01 子树，下半身保留 Base 状态）。
+        /// 站定地面空闲（IsOnGround + SpeedAbs≤0.2 + 非蹲/睡/水/骑/死）→ Base 层全身 throw_general（IsThrowing）；
+        /// 其余（移动/飞行/蹲/蹲走/游泳/骑乘等）→ Activity 层上半身 throw_general（IsThrowingUpperBody，boneMask=spine_01 子树，下半身保留 Base 状态）。
         /// 首帧选定后锁住不互转。
         /// 双路径各持双锁（request 待播 + active 播放锁），仿 UpdatePickupState：
         /// 首帧设 param+request 后 return（规则下帧评估）→ 次帧判该层是否真播 throw → 锁。
@@ -1017,7 +1014,7 @@ namespace Game {
         /// Activity 锁中 throw 离开 Activity（仅高优先级 Activity 规则抢，如 IsFiring/IsAttacking）→ 立即抛（需求：高优先级打断），
         /// 静止不抢 Activity throw（IsThrowingUpperBody 锁不受 SpeedAbs 影响，需求：移→静止继续播到投出）。
         /// 双抛防护：两 param 互斥（首帧选一）+ ExecuteAim 幂等（消费 m_aimPendingRay 置 null，二次调 no-op）。
-        /// Poke(false) 清理：OnAim Completed（ExecuteAim 内）副作用设 PokingPhase=0.0001，各结束分支清 0 防 UpdateDigState 误播 dig_chop。
+        /// Poke(false) 清理：OnAim Completed（ExecuteAim 内）副作用设 PokingPhase=0.0001，各结束分支清 0 防 UpdateDigState 误播 dig_general。
         /// ThrowComplete 事件（onComplete，两路径共用）→ 由 active 锁判哪条完成 → 下帧停。
         /// </summary>
         void UpdateThrowState(AnimationController controller) {
@@ -1134,7 +1131,7 @@ namespace Game {
             }
         }
 
-        /// <summary>清 OnAim Completed 副作用 Poke(false) 设的 PokingPhase 残留，防投掷后 UpdateDigState 误播 dig_chop。</summary>
+        /// <summary>清 OnAim Completed 副作用 Poke(false) 设的 PokingPhase 残留，防投掷后 UpdateDigState 误播 dig_general。</summary>
         void ClearThrowPokingPhase() {
             // 投掷时持雪球/炸弹等不挖（无 DigCellFace），PokingPhase 仅由 Poke(false) 启动；直接清 0 不影响真挖（真挖不进 throw 路径）。
             // 打断跨帧时 ComponentMiner.Update 已 tick 涨过 0.001，故不限阈值全清（>0 即清）。
@@ -1358,8 +1355,8 @@ namespace Game {
                     break;
                 }
                 case "DigInterrupt": {
-                    // dig 被抢中断（place/use/attacked 等切走 dig_chop/dig_harvest，未自然播完无 DigLoopComplete）：
-                    // 清 m_digActive 防 IsDigging 卡 true（否则 place 后 dig_chop 规则匹配重播第二遍）。挖中下帧重设。
+                    // dig 被抢中断（place/use/attacked 等切走 dig_general/dig_harvest，未自然播完无 DigLoopComplete）：
+                    // 清 m_digActive 防 IsDigging 卡 true（否则 place 后 dig_general 规则匹配重播第二遍）。挖中下帧重设。
                     m_digActive = false;
                     break;
                 }
@@ -1400,7 +1397,7 @@ namespace Game {
                     break;
                 }
                 case "ThrowComplete": {
-                    // 两路径共用 throw_overhand alias（onComplete=ThrowComplete）。由 active 锁判哪条完成：
+                    // 两路径共用 throw_general alias（onComplete=ThrowComplete）。由 active 锁判哪条完成：
                     if (m_throwUpperActive) m_throwUpperJustCompleted = true;
                     else m_throwJustCompleted = true;
                     break;
@@ -1411,7 +1408,7 @@ namespace Game {
                     break;
                 }
                 case "AimImpact": {
-                    // throw_overhand 播到 25%（events）或被打断（onInterrupt）均走此：ExecuteAim 抛射（Pending=松手存的 ray）。
+                    // throw_general 播到 25%（events）或被打断（onInterrupt）均走此：ExecuteAim 抛射（Pending=松手存的 ray）。
                     // 防双抛：ExecuteAim 消费 m_aimPendingRay 置 null，25% event 抛后若再 onInterrupt → null no-op。
                     m_componentMiner?.ExecuteAim(ComponentMiner.TargetMode.Pending);
                     break;
