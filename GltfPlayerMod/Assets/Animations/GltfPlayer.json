@@ -396,6 +396,16 @@
           "animation": "idle_tired"
         },
         {
+          "condition": "[RandomIdleEvent] != ''",
+          "animation": {
+            "source": "[RandomIdleEvent]",
+            "loop": false,
+            "preservePose": true,
+            "blendDuration": 0.3,
+            "onComplete": { "type": "trigger", "name": "RandomIdleComplete" }
+          }
+        },
+        {
           "condition": "true",
           "animation": "idle"
         }
@@ -514,6 +524,7 @@
     "IsAiming": false,
     "IsFiring": false,
     "IsThrowing": false,
-    "IsThrowingUpperBody": false
+    "IsThrowingUpperBody": false,
+    "RandomIdleEvent": ""
   }
 }

@@ -141,6 +141,25 @@ namespace Game {
         private bool m_throwUpperActive;       // Activity 路径播放锁（上半身 throw，开播到 ThrowComplete/高优先级打断）
         private bool m_throwUpperJustCompleted;// Activity ThrowComplete latch
 
+        // ===== 随机待机动作（groundedIdle 持续 15-30s 随机播 pool 动作，repeat count 后回 idle） =====
+        // pool 合并 12 clip 等概率随机，repeat 按所属池（Once=1 / Twice=2）。
+        private static readonly string[] RandomIdleOnce = {
+            "BackFlip", "Confused", "Consume", "Dance Body Roll",
+            "Dance Reach Hip", "Dance Charleston", "Idle_FoldArms_Loop", "Yes"
+        };
+        private static readonly string[] RandomIdleTwice = {
+            "Dance_Loop", "Idle Listening", "Jumping Jacks", "Pushup"
+        };
+        private static readonly System.Random m_random = new();
+        private float  m_idleTimer;              // groundedIdle 累计秒
+        private float  m_nextIdleInterval;       // 下次触发间隔（15-30s 随机）
+        private string m_randomIdleClip;         // 当前选中 clip 名
+        private int    m_randomIdleRepeat;       // 目标次数（1 或 2）
+        private int    m_randomIdlePlayed;       // 已播次数
+        private bool   m_randomIdleActive;       // 播放锁
+        private bool   m_randomIdleJustCompleted;// onComplete latch
+        private bool   m_randomIdleReplayPending;// repeat 重播待设（清→设两帧）
+
         // ===== head IK 视线追踪 =====
         // head IK 链名（OnControllerCreated 注册，SyncAnimationParameters 每帧 SetIKAim）
         private const string HeadIKChain = "Head";
@@ -266,6 +285,7 @@ namespace Game {
             controller.Parameters.SetBool("IsFiring", false);
             controller.Parameters.SetBool("IsThrowing", false);
             controller.Parameters.SetBool("IsThrowingUpperBody", false);
+            controller.Parameters.SetString("RandomIdleEvent", string.Empty);
 
             // 换模型（SetModel 重建 controller）时重置 latch 字段，防残留驱动 Update* 致虚假 dig/place/use/interact/fire/throw 循环。
             m_digActive = false;
@@ -285,6 +305,14 @@ namespace Game {
             m_throwUpperRequest = false;
             m_throwUpperActive = false;
             m_throwUpperJustCompleted = false;
+            m_idleTimer = 0f;
+            m_nextIdleInterval = NextIdleInterval();
+            m_randomIdleClip = null;
+            m_randomIdleRepeat = 0;
+            m_randomIdlePlayed = 0;
+            m_randomIdleActive = false;
+            m_randomIdleJustCompleted = false;
+            m_randomIdleReplayPending = false;
             // 旧动作 latch（attack/pickup/attacked）同步重置，防换模型残留（m_attackState=Winding 残留致虚假 attack 重播 + 过期 MeleeImpact）。
             m_attackState = AttackState.Idle;
             m_attackActive = false;
@@ -329,6 +357,7 @@ namespace Game {
             UpdateAimState(controller);
             UpdateFireState(controller);
             UpdateThrowState(controller);
+            UpdateRandomIdleState(controller);
             UpdateMoveSpeed(controller);
 
             // head IK：兜底补注册（OnControllerCreated 时 model 未就绪则此处补）+ 每帧设 aim
@@ -1015,22 +1044,8 @@ namespace Game {
             }
 
             // === 首帧：aimPending 刚到，按"是否站定地面空闲"选路径（选定后锁住不互转）===
-            // Base 层 throw 仅"站定地面空闲"时胜出——Base 规则顺序里这些优先于 IsThrowing 会盖过：
-            //   dead / climbup / land / ride / wakeup / sleep(LieDownFactor) / water / !onGround(jump) / crouch / run / walk。
-            // 任一命中则 Base 不播 throw，改走 Activity 上半身（boneMask=spine_01 子树不冲突 Base 下半身状态）。
-            // 故 groundedIdle 须排除上述全部；漏任一则误判→走 Base→Base 不播 throw→兜底立即抛（抛射仍发生，仅丢投掷动画）。
-            // 用 m_jumpPhase==JumpPhaseGround 替 IsOnGround：Ground 是唯一站定空闲相位（排除 Land/Start/Loop/ClimbUp）。
-            // 注意飞行/水/梯子/骑乘/死亡时 UpdateJumpPhase overridden 会 reset m_jumpPhase=Ground，故仍需 !IsFlying/!IsInWater/!IsRiding/!IsDead 显式排除。
-            // 维护：Base 层规则演变（加新优先于 throw 的状态）时须同步此判据。
-            bool groundedIdle = m_jumpPhase == JumpPhaseGround
-                             && controller.Parameters.GetFloat("SpeedAbs") <= 0.2f
-                             && controller.Parameters.GetFloat("CrouchFactor") <= 0f
-                             && controller.Parameters.GetFloat("LieDownFactor") <= 0f
-                             && !controller.Parameters.GetBool("IsInWater")
-                             && !controller.Parameters.GetBool("IsRiding")
-                             && !controller.Parameters.GetBool("IsDead")
-                             && !controller.Parameters.GetBool("IsFlying")
-                             && !controller.Parameters.GetBool("IsWakingUp");
+            // Base 层 throw 仅 groundedIdle 时胜出（其余状态规则优先盖过 → 走 Activity 上半身）。判据见 IsGroundedIdle。
+            bool groundedIdle = IsGroundedIdle(controller, false);
             if (groundedIdle) {
                 // 站定地面 → Base 全身路径
                 m_throwRequest = true;
@@ -1081,6 +1096,106 @@ namespace Game {
                 }
             }
             return false;
+        }
+
+        /// <summary>
+        /// 是否"站定地面空闲"——Base 层会落到 idle（true 兜底）的状态。throw 选 Base 全身 vs Activity 上半身、
+        /// random idle 是否累计触发，共用此判据。
+        /// 基础 9 条（excludeIdleVariants=false）：排除 Base 规则中优先于 idle 的状态
+        ///   dead/climbup/land/ride/wakeup/sleep/water/!onGround(jump)/crouch/run/walk。throw 用此档（原行为，持武器/发抖/
+        ///   疲劳时投掷仍走 Base 全身）。
+        /// excludeIdleVariants=true（random 用）：再加 melee_idle/shivering/idle_tired 三种 idle 变体 + throw/dig_harvest/
+        ///   pickup 三种 base 层瞬态动作（均优先于 random 规则）——仅裸 idle 触发。避免这些状态盖过 random 规则时仍累计
+        ///   计时/设 param 残留（状态结束瞬间误播），且被打断后须重新累计满 interval 才再触发。
+        /// 用 m_jumpPhase==JumpPhaseGround 替 IsOnGround：Ground 是唯一站定空闲相位（排除 Land/Start/Loop/ClimbUp）；
+        /// 飞行/水/梯子/骑乘/死亡时 UpdateJumpPhase overridden reset Ground，故仍需显式 !IsFlying/!IsInWater/!IsRiding/!IsDead。
+        /// 维护：Base 层规则演变（加新优先于 idle/throw 的状态）时须同步基础 9 条。
+        /// </summary>
+        bool IsGroundedIdle(AnimationController controller, bool excludeIdleVariants) {
+            var p = controller.Parameters;
+            bool grounded = m_jumpPhase == JumpPhaseGround
+                && p.GetFloat("SpeedAbs") <= 0.2f
+                && p.GetFloat("CrouchFactor") <= 0f
+                && p.GetFloat("LieDownFactor") <= 0f
+                && !p.GetBool("IsInWater")
+                && !p.GetBool("IsRiding")
+                && !p.GetBool("IsDead")
+                && !p.GetBool("IsFlying")
+                && !p.GetBool("IsWakingUp");
+            if (!grounded || !excludeIdleVariants) {
+                return grounded;
+            }
+            return !p.GetBool("IsHoldingMeleeWeapon")
+                && !p.GetBool("IsShivering")
+                && !p.GetBool("IsTired")
+                && !p.GetBool("IsThrowing")
+                && !p.GetBool("IsPickingUp")
+                && !(p.GetBool("IsDigging") && p.GetBool("IsDiggingPlant"));
+        }
+
+        /// <summary>下次随机待机触发间隔（15-30s 随机）。</summary>
+        static float NextIdleInterval() => 15f + (float)m_random.NextDouble() * 15f;
+
+        /// <summary>
+        /// 随机待机：groundedIdle 持续 15-30s 随机播 pool 动作（source 由 [RandomIdleEvent] 参数驱动，见 json 规则），
+        /// loop:false 播 repeat 次（Once=1/Twice=2）后回 idle 重新计时。repeat 靠 onComplete latch 清 param（回 idle）→
+        /// 下帧重设同 clip（source 名 ""→clip 变 → 层重切从头播）。离开 groundedIdle → 清 param + 重置计时。
+        /// </summary>
+        void UpdateRandomIdleState(AnimationController controller) {
+            // 1. onComplete latch：动作播完
+            if (m_randomIdleJustCompleted) {
+                m_randomIdleJustCompleted = false;
+                m_randomIdleActive = false;
+                m_randomIdlePlayed++;
+                if (m_randomIdlePlayed < m_randomIdleRepeat) {
+                    m_randomIdleReplayPending = true;   // 下帧重设同 clip 重播（repeat 未到）
+                }
+                else {
+                    m_randomIdlePlayed = 0;             // repeat 到，重置计时
+                    m_idleTimer = 0f;
+                    m_nextIdleInterval = NextIdleInterval();
+                }
+                controller.Parameters.SetString("RandomIdleEvent", string.Empty);  // 清 param（path 变 idle）
+                return;
+            }
+            // 2. repeat 重播（清→设第二帧：source "" → clip，名变→层重切从头播）。
+            // 复查 groundedIdle：repeat 间隙（clip 播完→下帧重播之间）若已离开 idle（移动/被 throw/dig/pickup 打断等）
+            // → 丢弃重播，落入分支③清 param 回 idle 重新计时（需求：打断后须重新等满 interval）。
+            if (m_randomIdleReplayPending) {
+                m_randomIdleReplayPending = false;
+                if (IsGroundedIdle(controller, true)) {
+                    controller.Parameters.SetString("RandomIdleEvent", m_randomIdleClip);
+                    m_randomIdleActive = true;
+                    return;
+                }
+                // 离开 → 落入分支③
+            }
+            // 3. 离开 groundedIdle（移动/飞/蹲/水/骑/武器/发抖/疲劳/throw/dig/pickup 打断等）→ 清 param + 重置计时。
+            //    interval 一并重置（重新随机）：下次回 idle 须重新累计满 15-30s 才触发。含分支② fall-through 场景。
+            if (!IsGroundedIdle(controller, true)) {
+                if (m_randomIdleActive || controller.Parameters.GetString("RandomIdleEvent") != string.Empty) {
+                    controller.Parameters.SetString("RandomIdleEvent", string.Empty);
+                }
+                m_randomIdleActive = false;
+                m_randomIdlePlayed = 0;
+                m_idleTimer = 0f;
+                m_nextIdleInterval = NextIdleInterval();
+                return;
+            }
+            // 4. groundedIdle 累计 → 到时随机选 clip（12 等概率，repeat 按所属池）
+            m_idleTimer += Time.FrameDuration;
+            if (!m_randomIdleActive && m_idleTimer >= m_nextIdleInterval) {
+                int idx = m_random.Next(12);
+                string clip;
+                int repeat;
+                if (idx < 8) { clip = RandomIdleOnce[idx]; repeat = 1; }
+                else { clip = RandomIdleTwice[idx - 8]; repeat = 2; }
+                controller.Parameters.SetString("RandomIdleEvent", clip);
+                m_randomIdleClip = clip;
+                m_randomIdleRepeat = repeat;
+                m_randomIdlePlayed = 0;
+                m_randomIdleActive = true;
+            }
         }
 
         /// <summary>
@@ -1212,6 +1327,11 @@ namespace Game {
                     // 两路径共用 throw_overhand alias（onComplete=ThrowComplete）。由 active 锁判哪条完成：
                     if (m_throwUpperActive) m_throwUpperJustCompleted = true;
                     else m_throwJustCompleted = true;
+                    break;
+                }
+                case "RandomIdleComplete": {
+                    // 随机待机动作播完（onComplete=RandomIdleComplete）：latch 给 UpdateRandomIdleState 处理 repeat/重置。
+                    m_randomIdleJustCompleted = true;
                     break;
                 }
                 case "AimImpact": {
