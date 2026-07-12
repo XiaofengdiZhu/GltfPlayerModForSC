@@ -14,7 +14,7 @@ namespace Game {
     /// 仅参与有 controller 的 ComponentHumanModel（ShouldApplyTo 过滤）。
     /// 各相位机详细逻辑见对应 Update* 方法。
     /// </remarks>
-    public class ComponentGltfPlayerBaseController : ComponentAnimationParticipant {
+    public class ComponentGltfPlayerBaseController : ComponentAnimationParticipant, IUpdateable {
         // 跳跃相位取值（写入控制器 JumpPhase 参数，供 JSON 规则 [JumpPhase]=='xxx' 查询）
         private const string JumpPhaseGround = "Ground";
         private const string JumpPhaseStart = "Start";
@@ -59,6 +59,14 @@ namespace Game {
 
         // 玩家挖掘组件（可空：服装 model 无）；读 ActiveBlockValue 判定手持近战武器
         private ComponentMiner m_componentMiner;
+
+        // Animate 跑到的帧号（SyncAnimationParameters 末尾设 = Time.FrameIndex）。
+        // Update 据此判 Animate 是否在跑：差>1 = 已停（第一人称/视锥外/远距 → ComponentModel.Animate 不被渲染器调）。
+        // Animate 停 → 动画驱动 pending 链失效 → 清 miner pending 回原版立即执行（见 Update）。
+        private int m_lastSyncedFrame;
+
+        // 上一帧 Animate 是否在跑（状态变化才 toggle pending，稳定期间 no-op）。初始 true（与 OnControllerCreated 的 SetRequiresPending 一致）。
+        private bool m_wasAnimating = true;
 
         // 拾取物飞行检测：扫 SubsystemPickables 找飞向本玩家的 Pickable（FlyToGatherer 指向本实体 gatherer）
         private ComponentPickableGatherer m_componentPickableGatherer;
@@ -265,29 +273,43 @@ namespace Game {
             // m_headIKRegistered 仍 true 会使 RegisterHeadIK 早退 → 新 controller 无链 → head IK 静默失效。
             m_headIKRegistered = false;
             m_headAimSmoothDisabled = false;
+            // 仅设非动作参数；动作参数（IsDigging/IsPlacing/IsUsing/IsInteracting/IsAttacking/IsThrowing/IsFiring/
+            // IsPickingUp/IsAttacked/IsAiming/RandomIdleEvent 等）由下方 ResetActionLatches 统一清，不重复设。
             controller.Parameters.SetString("JumpPhase", m_jumpPhase);
             controller.Parameters.SetBool("IsWakingUp", m_isWakingUp);
             controller.Parameters.SetBool("IsShivering", false);
             controller.Parameters.SetBool("IsTired", false);
             controller.Parameters.SetBool("IsHoldingMeleeWeapon", false);
-            controller.Parameters.SetBool("IsPickingUp", false);
-            controller.Parameters.SetBool("IsAttacked", false);
-            controller.Parameters.SetBool("IsAttacking", false);
             controller.Parameters.SetFloat("AttackComboParity", 0f);
-            controller.Parameters.SetBool("IsDigging", false);
-            controller.Parameters.SetBool("IsDiggingPlant", false);
-            controller.Parameters.SetBool("IsPlacing", false);
-            controller.Parameters.SetBool("IsPlacingPlant", false);
-            controller.Parameters.SetBool("IsUsing", false);
-            controller.Parameters.SetBool("IsInteracting", false);
-            controller.Parameters.SetBool("IsInteractChest", false);
-            controller.Parameters.SetBool("IsAiming", false);
-            controller.Parameters.SetBool("IsFiring", false);
-            controller.Parameters.SetBool("IsThrowing", false);
-            controller.Parameters.SetBool("IsThrowingUpperBody", false);
-            controller.Parameters.SetString("RandomIdleEvent", string.Empty);
 
-            // 换模型（SetModel 重建 controller）时重置 latch 字段，防残留驱动 Update* 致虚假 dig/place/use/interact/fire/throw 循环。
+            // 换模型（SetModel 重建 controller）时重置 latch 字段；Animate 停跑时 Update 也调（防切回第三人称残留驱动虚假循环）。见 ResetActionLatches。
+            ResetActionLatches(controller);
+            // 配置 Attack/Place/Use/Interact 走 pending。仅 glTF 玩家有此 controller；
+            // dae/AI 的 miner 无 controller → m_requiresPending 恒 None → 原版立即执行。每次 controller 重建（换模型）重设，幂等。
+            if (m_componentMiner != null) {
+                m_componentMiner.SetRequiresPending(ComponentMiner.PendingAction.Attack);
+                m_componentMiner.SetRequiresPending(ComponentMiner.PendingAction.Place);
+                m_componentMiner.SetRequiresPending(ComponentMiner.PendingAction.Use);
+                m_componentMiner.SetRequiresPending(ComponentMiner.PendingAction.Interact);
+                // Aim pending：投掷物松手不立即抛，存 pending 等 throw_overhand 播 25%（AimImpact event）/被打断时 ExecuteAim 抛。
+                // 仅投掷物（API ComponentMiner.Aim 拦截处按 ThrowableBlockBehavior 判定）；弓/弩/火枪不 pending（松手即抛走 ProjectileAdded）。
+                m_componentMiner.SetRequiresPending(ComponentMiner.PendingAction.Aim);
+            }
+
+            // 初始保守判 Animate 在跑（与上方 SetRequiresPending 一致）；实际未跑（出生即第一人称）则 Update 2 帧内纠正（<=1 容差致检测延迟）。
+            m_lastSyncedFrame = Time.FrameIndex;
+            m_wasAnimating = true;
+
+            // 注册 head IK 链（[neck, head]，SingleBoneIK）。幂等去重，换模型自动重注册。
+            // model 偶未就绪则返回 null，由 SyncAnimationParameters 兜底补注册。
+            RegisterHeadIK(controller);
+        }
+
+        /// <summary>
+        /// 重置全部动作 latch 字段（dig/place/use/interact/fire/throw/random-idle/attack/pickup/attacked）到空闲态。
+        /// 换模型（OnControllerCreated）与 Animate 停跑（Update 检测，防切回第三人称残留驱动虚假循环）时调用。
+        /// </summary>
+        void ResetActionLatches(AnimationController controller) {
             m_digActive = false;
             m_digPlantCached = false;
             m_digJustCompleted = false;
@@ -313,8 +335,11 @@ namespace Game {
             m_randomIdleActive = false;
             m_randomIdleJustCompleted = false;
             m_randomIdleReplayPending = false;
-            // 旧动作 latch（attack/pickup/attacked）同步重置，防换模型残留（m_attackState=Winding 残留致虚假 attack 重播 + 过期 MeleeImpact）。
+            // 旧动作 latch（attack/pickup/attacked）：m_attackState=Winding 残留致虚假 attack 重播 + 过期 MeleeImpact。
+            // parity/comboMode 同步重置，与 OnControllerCreated 的 AttackComboParity 参数初值对齐。
             m_attackState = AttackState.Idle;
+            m_attackParity = 0;
+            m_attackComboMode = AttackComboMode.Complete;
             m_attackActive = false;
             m_attackJustCompleted = false;
             m_pickupActive = false;
@@ -322,21 +347,26 @@ namespace Game {
             m_attackedActive = false;
             m_attackedPending = false;
             m_attackedJustCompleted = false;
-            // 配置 Attack/Place/Use/Interact 走 pending。仅 glTF 玩家有此 controller；
-            // dae/AI 的 miner 无 controller → m_requiresPending 恒 None → 原版立即执行。每次 controller 重建（换模型）重设，幂等。
-            if (m_componentMiner != null) {
-                m_componentMiner.SetRequiresPending(ComponentMiner.PendingAction.Attack);
-                m_componentMiner.SetRequiresPending(ComponentMiner.PendingAction.Place);
-                m_componentMiner.SetRequiresPending(ComponentMiner.PendingAction.Use);
-                m_componentMiner.SetRequiresPending(ComponentMiner.PendingAction.Interact);
-                // Aim pending：投掷物松手不立即抛，存 pending 等 throw_overhand 播 25%（AimImpact event）/被打断时 ExecuteAim 抛。
-                // 仅投掷物（API ComponentMiner.Aim 拦截处按 ThrowableBlockBehavior 判定）；弓/弩/火枪不 pending（松手即抛走 ProjectileAdded）。
-                m_componentMiner.SetRequiresPending(ComponentMiner.PendingAction.Aim);
-            }
 
-            // 注册 head IK 链（[neck, head]，SingleBoneIK）。幂等去重，换模型自动重注册。
-            // model 偶未就绪则返回 null，由 SyncAnimationParameters 兜底补注册。
-            RegisterHeadIK(controller);
+            // 清动作参数（Sync 不跑期间残留 → 切回第三人称首帧规则误匹配播残留 clip）。
+            // controller 可空（model 偶未就绪）：null 时仅清 latch，跳过参数清。
+            if (controller != null) {
+                controller.Parameters.SetBool("IsDigging", false);
+                controller.Parameters.SetBool("IsDiggingPlant", false);
+                controller.Parameters.SetBool("IsPlacing", false);
+                controller.Parameters.SetBool("IsPlacingPlant", false);
+                controller.Parameters.SetBool("IsUsing", false);
+                controller.Parameters.SetBool("IsInteracting", false);
+                controller.Parameters.SetBool("IsInteractChest", false);
+                controller.Parameters.SetBool("IsAttacking", false);
+                controller.Parameters.SetBool("IsPickingUp", false);
+                controller.Parameters.SetBool("IsAttacked", false);
+                controller.Parameters.SetBool("IsAiming", false);
+                controller.Parameters.SetBool("IsFiring", false);
+                controller.Parameters.SetBool("IsThrowing", false);
+                controller.Parameters.SetBool("IsThrowingUpperBody", false);
+                controller.Parameters.SetString("RandomIdleEvent", string.Empty);
+            }
         }
 
         /// <summary>
@@ -363,6 +393,49 @@ namespace Game {
             // head IK：兜底补注册（OnControllerCreated 时 model 未就绪则此处补）+ 每帧设 aim
             RegisterHeadIK(controller);
             UpdateHeadIK(controller);
+
+            // 标记本帧 Animate 跑了（Sync 由 Animate 经 SyncParticipants 调）。Update 据此判 Animate 是否在跑，
+            // 停则清 miner pending 回原版立即执行（第一人称/视锥外时 Animate 不被渲染器调 → pending 链失效）。
+            m_lastSyncedFrame = Time.FrameIndex;
+        }
+
+        /// <summary>Update 调度顺序（IUpdateable）。Input：早于 Player/Miner.Update(Default)，pending 配置 toggle 当帧生效（消除转换帧竞态）。</summary>
+        public UpdateOrder UpdateOrder => UpdateOrder.Input;
+
+        /// <summary>
+        /// 监控 ComponentModel.Animate 是否在跑；停则清 miner pending 回原版立即执行。
+        /// </summary>
+        /// <remarks>
+        /// 第一人称/视锥外/远距时 SubsystemModelsRenderer 不调 Animate（IsVisibleForCamera=false → 不进 m_modelsToPrepare
+        /// → PrepareModel 不调）。Animate 停 → SyncAnimationParameters 与动画事件全不跑 → 本控制器无法消费 pending →
+        /// miner AnyIsPending 永久 true → Dig/Place/Use/Interact/Attack/Aim 入口全短路（Dig 不走 pending 但被株连）。
+        /// 故 Animate 停时：ClearRequiresPending（miner 回原版立即执行，由 ComponentPlayer.Update 直接调）+
+        /// ClearAllIsPending（丢弃残留，防株连）+ ResetActionLatches（防切回第三人称残留驱动虚假循环）。
+        /// 通用判据（非仅 IsEntityFirstPersonTarget）：覆盖分屏 glTF 玩家走出所有相机视锥的情况。
+        /// 状态变化才 toggle（m_wasAnimating），稳定期间 no-op。判据差≤1：Update 早于 Animate，用上帧 Sync 记号。
+        /// </remarks>
+        public void Update(float dt) {
+            if (m_componentMiner == null) return;
+            bool animating = Time.FrameIndex - m_lastSyncedFrame <= 1;
+            if (animating == m_wasAnimating) return;   // 状态未变：稳定期间幂等 no-op
+            m_wasAnimating = animating;
+            const ComponentMiner.PendingAction allPending =
+                ComponentMiner.PendingAction.Attack | ComponentMiner.PendingAction.Place
+                | ComponentMiner.PendingAction.Use | ComponentMiner.PendingAction.Interact
+                | ComponentMiner.PendingAction.Aim;
+            var controller = Entity.FindComponent<ComponentHumanModel>()?.AnimationController;
+            if (animating) {
+                // 切回第三人称/重回视锥：恢复动画驱动 pending（幂等 Set，与 OnControllerCreated 一致）
+                m_componentMiner.SetRequiresPending(allPending);
+                // 清切走期间残留动作参数（Sync 不跑 → 参数未被 Update*State 覆盖 → 首帧规则误匹配播残留 clip）
+                ResetActionLatches(controller);
+            }
+            else {
+                // 进第一人称/出视锥：清配置（miner 回原版立即执行）+ 清运行时残留（丢弃待执行动作）+ 清本控制器 latch/参数
+                m_componentMiner.ClearRequiresPending(allPending);
+                m_componentMiner.ClearAllIsPending();
+                ResetActionLatches(controller);
+            }
         }
 
         /// <summary>
