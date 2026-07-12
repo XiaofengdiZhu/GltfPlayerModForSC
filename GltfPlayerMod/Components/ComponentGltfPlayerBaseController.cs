@@ -133,10 +133,13 @@ namespace Game {
 
         // fire/throw：ProjectileAdded 事件 latch（仅弓→fire）；投掷物走 Aim pending（IsPending(Aim) 触发 throw_overhand）。
         private bool m_projectileFirePending;  // OnProjectileAdded 置位（仅本玩家，持弓/弩/火枪）
-        private bool m_throwRequest;           // IsPending(Aim) 收到 → 待下帧判 Base 是否播 throw（仿 pickup 延一帧，区分站定/移动）
-        private bool m_throwActive;            // throw 在 Base 播放锁（开播到 ThrowComplete/打断兜底）
+        private bool m_throwRequest;           // Base 路径待播（首帧设，次帧判 Base 是否播 throw）
+        private bool m_throwActive;            // Base 路径播放锁（开播到 ThrowComplete/打断兜底）
         private bool m_fireJustCompleted;
-        private bool m_throwJustCompleted;
+        private bool m_throwJustCompleted;     // Base ThrowComplete latch
+        private bool m_throwUpperRequest;      // Activity 路径待播（首帧设，次帧判 Activity 是否播 throw）
+        private bool m_throwUpperActive;       // Activity 路径播放锁（上半身 throw，开播到 ThrowComplete/高优先级打断）
+        private bool m_throwUpperJustCompleted;// Activity ThrowComplete latch
 
         // ===== head IK 视线追踪 =====
         // head IK 链名（OnControllerCreated 注册，SyncAnimationParameters 每帧 SetIKAim）
@@ -262,6 +265,7 @@ namespace Game {
             controller.Parameters.SetBool("IsAiming", false);
             controller.Parameters.SetBool("IsFiring", false);
             controller.Parameters.SetBool("IsThrowing", false);
+            controller.Parameters.SetBool("IsThrowingUpperBody", false);
 
             // 换模型（SetModel 重建 controller）时重置 latch 字段，防残留驱动 Update* 致虚假 dig/place/use/interact/fire/throw 循环。
             m_digActive = false;
@@ -278,6 +282,9 @@ namespace Game {
             m_throwActive = false;
             m_fireJustCompleted = false;
             m_throwJustCompleted = false;
+            m_throwUpperRequest = false;
+            m_throwUpperActive = false;
+            m_throwUpperJustCompleted = false;
             // 旧动作 latch（attack/pickup/attacked）同步重置，防换模型残留（m_attackState=Winding 残留致虚假 attack 重播 + 过期 MeleeImpact）。
             m_attackState = AttackState.Idle;
             m_attackActive = false;
@@ -770,7 +777,8 @@ namespace Game {
                               || controller.Parameters.GetBool("IsUsing")
                               || controller.Parameters.GetBool("IsInteracting")
                               || controller.Parameters.GetBool("IsFiring")
-                              || controller.Parameters.GetBool("IsThrowing");
+                              || controller.Parameters.GetBool("IsThrowing")
+                              || controller.Parameters.GetBool("IsThrowingUpperBody");
             if (digSuppressed) {
                 m_digActive = false;
             }
@@ -894,15 +902,21 @@ namespace Game {
         }
 
         /// <summary>
-        /// 投掷动作（Base 全身）：IsPending(Aim)（投掷物松手，API ComponentMiner.Aim 拦截存 pending）→ IsThrowing=true
-        /// （throw_overhand / OverhandThrow）。双锁仿 UpdatePickupState（m_throwRequest 待播 + m_throwActive 播放锁）：
-        /// 首帧设 IsThrowing + m_throwRequest 后 return（规则下帧才评估，本帧不查 Base）→ 次帧判 Base 是否真播 throw；
-        /// 站定 → Base 选 throw_overhand → 锁 → 播到 25% AimImpact event（或 onInterrupt 兜底）→ ExecuteAim 抛射；
-        /// 移动 → walk 胜出 throw 从未播 → 补偿立即抛 + 清；25% 前被打断 → 锁着但 throw 离开 Base → pending 残留补偿抛。
-        /// Poke(false) 清理：OnAim Completed（ExecuteAim 内）副作用设 PokingPhase=0.0001（vanilla 挖矿 poke 启动），
-        /// 投掷 anim 不需它，各结束分支清 0 防 UpdateDigState 误判 digging 播 dig_chop。ThrowComplete 事件下帧停。
+        /// 投掷动作（双路径状态机）：IsPending(Aim)（投掷物松手，API ComponentMiner.Aim 拦截存 pending）→ 首帧按"是否站定地面空闲"选路径：
+        /// 站定地面空闲（IsOnGround + SpeedAbs≤0.2 + 非蹲/睡/水/骑/死）→ Base 层全身 throw_overhand（IsThrowing）；
+        /// 其余（移动/飞行/蹲/蹲走/游泳/骑乘等）→ Activity 层上半身 throw_overhand（IsThrowingUpperBody，boneMask=spine_01 子树，下半身保留 Base 状态）。
+        /// 首帧选定后锁住不互转。
+        /// 双路径各持双锁（request 待播 + active 播放锁），仿 UpdatePickupState：
+        /// 首帧设 param+request 后 return（规则下帧评估）→ 次帧判该层是否真播 throw → 锁。
+        /// 切换语义：Base 锁中 throw 离开 Base（移动 walk 胜出）→ 立即抛（需求：静→移动打断即抛）；
+        /// Activity 锁中 throw 离开 Activity（仅高优先级 Activity 规则抢，如 IsFiring/IsAttacking）→ 立即抛（需求：高优先级打断），
+        /// 静止不抢 Activity throw（IsThrowingUpperBody 锁不受 SpeedAbs 影响，需求：移→静止继续播到投出）。
+        /// 双抛防护：两 param 互斥（首帧选一）+ ExecuteAim 幂等（消费 m_aimPendingRay 置 null，二次调 no-op）。
+        /// Poke(false) 清理：OnAim Completed（ExecuteAim 内）副作用设 PokingPhase=0.0001，各结束分支清 0 防 UpdateDigState 误播 dig_chop。
+        /// ThrowComplete 事件（onComplete，两路径共用）→ 由 active 锁判哪条完成 → 下帧停。
         /// </summary>
         void UpdateThrowState(AnimationController controller) {
+            // Base 路径完成
             if (m_throwJustCompleted) {
                 m_throwJustCompleted = false;
                 m_throwActive = false;
@@ -910,13 +924,27 @@ namespace Game {
                 controller.Parameters.SetBool("IsThrowing", false);
                 return;
             }
+            // Activity 路径完成
+            if (m_throwUpperJustCompleted) {
+                m_throwUpperJustCompleted = false;
+                m_throwUpperActive = false;
+                ClearThrowPokingPhase();
+                controller.Parameters.SetBool("IsThrowingUpperBody", false);
+                return;
+            }
+
             bool aimPending = m_componentMiner != null && m_componentMiner.IsPending(ComponentMiner.PendingAction.Aim);
             bool basePlayingThrow = BaseLayerIsPlaying(controller, OverhandThrowSource);
+            bool actPlayingThrow = ActivityLayerIsPlaying(controller, OverhandThrowSource);
 
+            // === Base 路径锁中（全身 throw）===
             if (m_throwActive) {
-                // 锁：throw 在 Base 播。等 ThrowComplete（停）/ 25% AimImpact event（ExecuteAim 抛）。
-                if (!basePlayingThrow) {
-                    // 25% 前被打断（ThrowComplete 未到）。pending 残留（25% event 未触发）→ 补偿抛；已抛则 aimPending=false no-op。
+                if (basePlayingThrow) {
+                    // 继续全身 throw，等 25% AimImpact event / ThrowComplete。
+                    controller.Parameters.SetBool("IsThrowing", true);
+                }
+                else {
+                    // Base throw 断（移动 walk 胜出 / 高优先级打断）→ 立即抛（需求：静→移动打断即抛）。aimPending 已消费则 no-op。
                     m_throwActive = false;
                     if (aimPending) {
                         m_componentMiner.ExecuteAim(ComponentMiner.TargetMode.Pending);
@@ -924,29 +952,44 @@ namespace Game {
                     ClearThrowPokingPhase();
                     controller.Parameters.SetBool("IsThrowing", false);
                 }
+                return;
+            }
+            // === Activity 路径锁中（上半身 throw）===
+            if (m_throwUpperActive) {
+                if (actPlayingThrow) {
+                    // 继续上半身（移动/静止都继续，需求：移→静止不断）。
+                    controller.Parameters.SetBool("IsThrowingUpperBody", true);
+                }
                 else {
-                    controller.Parameters.SetBool("IsThrowing", true);
+                    // Activity throw 断（仅高优先级 Activity 规则抢，如 IsFiring）→ 立即抛（需求：高优先级打断）。
+                    m_throwUpperActive = false;
+                    if (aimPending) {
+                        m_componentMiner.ExecuteAim(ComponentMiner.TargetMode.Pending);
+                    }
+                    ClearThrowPokingPhase();
+                    controller.Parameters.SetBool("IsThrowingUpperBody", false);
                 }
                 return;
             }
 
+            // === 未锁 ===
             if (!aimPending) {
                 m_throwRequest = false;
+                m_throwUpperRequest = false;
                 controller.Parameters.SetBool("IsThrowing", false);
+                controller.Parameters.SetBool("IsThrowingUpperBody", false);
                 return;
             }
 
-            // aimPending==true, 未锁
+            // Base 路径次帧（上帧设 request+IsThrowing，规则已评估）
             if (m_throwRequest) {
-                // 已给规则一帧选 throw（上帧设 request+IsThrowing）。判 Base 是否真播：
                 if (basePlayingThrow) {
-                    // 站定开播 → 锁，等 25% AimImpact event（HandleAnimationEvent）调 ExecuteAim 抛射。
                     m_throwRequest = false;
                     m_throwActive = true;
                     controller.Parameters.SetBool("IsThrowing", true);
                 }
                 else {
-                    // 移动（walk 胜出，给一帧仍没播 throw）→ throw 不会到 25% → 补偿立即抛 + 清。
+                    // 静止触发但 Base 没播（异常/首帧未切入）→ 兜底立即抛。
                     m_throwRequest = false;
                     controller.Parameters.SetBool("IsThrowing", false);
                     m_componentMiner.ExecuteAim(ComponentMiner.TargetMode.Pending);
@@ -954,10 +997,50 @@ namespace Game {
                 }
                 return;
             }
+            // Activity 路径次帧
+            if (m_throwUpperRequest) {
+                if (actPlayingThrow) {
+                    m_throwUpperRequest = false;
+                    m_throwUpperActive = true;
+                    controller.Parameters.SetBool("IsThrowingUpperBody", true);
+                }
+                else {
+                    // 移动触发但 Activity 没播（BlendDuration 首帧未切入/规则失配）→ 兜底立即抛。
+                    m_throwUpperRequest = false;
+                    controller.Parameters.SetBool("IsThrowingUpperBody", false);
+                    m_componentMiner.ExecuteAim(ComponentMiner.TargetMode.Pending);
+                    ClearThrowPokingPhase();
+                }
+                return;
+            }
 
-            // 首帧：aimPending 刚到。设 request + IsThrowing，给规则下帧评估选 throw。本帧不查 base（规则尚未评估）。
-            m_throwRequest = true;
-            controller.Parameters.SetBool("IsThrowing", true);
+            // === 首帧：aimPending 刚到，按"是否站定地面空闲"选路径（选定后锁住不互转）===
+            // Base 层 throw 仅"站定地面空闲"时胜出——Base 规则顺序里这些优先于 IsThrowing 会盖过：
+            //   dead / climbup / land / ride / wakeup / sleep(LieDownFactor) / water / !onGround(jump) / crouch / run / walk。
+            // 任一命中则 Base 不播 throw，改走 Activity 上半身（boneMask=spine_01 子树不冲突 Base 下半身状态）。
+            // 故 groundedIdle 须排除上述全部；漏任一则误判→走 Base→Base 不播 throw→兜底立即抛（抛射仍发生，仅丢投掷动画）。
+            // 用 m_jumpPhase==JumpPhaseGround 替 IsOnGround：Ground 是唯一站定空闲相位（排除 Land/Start/Loop/ClimbUp）。
+            // 注意飞行/水/梯子/骑乘/死亡时 UpdateJumpPhase overridden 会 reset m_jumpPhase=Ground，故仍需 !IsFlying/!IsInWater/!IsRiding/!IsDead 显式排除。
+            // 维护：Base 层规则演变（加新优先于 throw 的状态）时须同步此判据。
+            bool groundedIdle = m_jumpPhase == JumpPhaseGround
+                             && controller.Parameters.GetFloat("SpeedAbs") <= 0.2f
+                             && controller.Parameters.GetFloat("CrouchFactor") <= 0f
+                             && controller.Parameters.GetFloat("LieDownFactor") <= 0f
+                             && !controller.Parameters.GetBool("IsInWater")
+                             && !controller.Parameters.GetBool("IsRiding")
+                             && !controller.Parameters.GetBool("IsDead")
+                             && !controller.Parameters.GetBool("IsFlying")
+                             && !controller.Parameters.GetBool("IsWakingUp");
+            if (groundedIdle) {
+                // 站定地面 → Base 全身路径
+                m_throwRequest = true;
+                controller.Parameters.SetBool("IsThrowing", true);
+            }
+            else {
+                // 移动/飞行/蹲/蹲走/游泳/骑乘等 → Activity 上半身路径
+                m_throwUpperRequest = true;
+                controller.Parameters.SetBool("IsThrowingUpperBody", true);
+            }
         }
 
         /// <summary>清 OnAim Completed 副作用 Poke(false) 设的 PokingPhase 残留，防投掷后 UpdateDigState 误播 dig_chop。</summary>
@@ -978,6 +1061,22 @@ namespace Game {
                 foreach (AnimationLayer l in layers) {
                     if (l.Index == 0) {
                         return l.AnimationPlayer?.Animation?.Name == sourceName;
+                    }
+                }
+            }
+            return false;
+        }
+
+        /// <summary>
+        /// Activity 层（上半身，boneMask=spine_01 子树）当前是否播指定 source。查 Animation.Name，排除停用渐降期 m_deactivating。
+        /// 双路径投掷判定移动→Activity throw 用。仿 UpdateAttackState 的 Name=="Activity" 判定。
+        /// </summary>
+        static bool ActivityLayerIsPlaying(AnimationController controller, string sourceName) {
+            AnimationLayer[] layers = controller.m_layers;
+            if (layers != null) {
+                foreach (AnimationLayer l in layers) {
+                    if (l.Name == "Activity") {
+                        return !l.m_deactivating && l.AnimationPlayer?.Animation?.Name == sourceName;
                     }
                 }
             }
@@ -1110,7 +1209,9 @@ namespace Game {
                     break;
                 }
                 case "ThrowComplete": {
-                    m_throwJustCompleted = true;
+                    // 两路径共用 throw_overhand alias（onComplete=ThrowComplete）。由 active 锁判哪条完成：
+                    if (m_throwUpperActive) m_throwUpperJustCompleted = true;
+                    else m_throwJustCompleted = true;
                     break;
                 }
                 case "AimImpact": {

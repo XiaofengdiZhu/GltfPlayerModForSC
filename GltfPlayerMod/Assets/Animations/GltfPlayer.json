@@ -398,6 +398,7 @@
         { "condition": "[IsDigging] == true && [IsDiggingPlant] == true", "animation": null },
         { "condition": "[IsDigging] == true", "animation": "dig_chop" },
         { "condition": "[IsAiming] == true", "animation": "aim_pistol" },
+        { "condition": "[IsThrowingUpperBody] == true", "animation": "throw_overhand" },
         {
           "condition": "[IsAttacking] == true && [AttackComboParity] == 0",
           "animation": "attack_cross"
@@ -497,6 +498,7 @@
     "IsInteractChest": false,
     "IsAiming": false,
     "IsFiring": false,
-    "IsThrowing": false
+    "IsThrowing": false,
+    "IsThrowingUpperBody": false
   }
 }
