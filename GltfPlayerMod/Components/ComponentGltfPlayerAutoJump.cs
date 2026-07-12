@@ -171,11 +171,16 @@ namespace Game {
                 if (!(curX == posX && curZ == posZ)) {
                     int cv = terrain.GetCellValue(curX, cellY, curZ);
                     int cvu = terrain.GetCellValue(curX, cellY + 1, curZ);
+                    int cvuu = terrain.GetCellValue(curX, cellY + 2, curZ);
                     Block blk = BlocksManager.Blocks[Terrain.ExtractContents(cv)];
                     Block blku = BlocksManager.Blocks[Terrain.ExtractContents(cvu)];
+                    Block blkuu = BlocksManager.Blocks[Terrain.ExtractContents(cvuu)];
+                    // 可爬障碍：障碍格可碰撞 + 上方 2 格（cellY+1 站脚、cellY+2 头顶）均不可碰撞。
+                    // 仅检 cellY+1 会让玩家爬进 1 格净空的凹位卡住（玩家站立需 2 格净空）。
                     bool c = !blk.NoAutoJump
                         && blk.GetIsCollidable(body, cv)
-                        && !blku.GetIsCollidable(body, cvu);
+                        && !blku.GetIsCollidable(body, cvu)
+                        && !blkuu.GetIsCollidable(body, cvuu);
                     if (c) { climbable = true; break; }
                 }
                 if (i == 4) break;
