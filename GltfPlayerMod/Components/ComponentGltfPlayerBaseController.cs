@@ -131,9 +131,10 @@ namespace Game {
         private bool m_interactChest;          // pending 目标分类（用公开 InteractPendingValue 取按下时存的目标）
         private bool m_interactJustCompleted;
 
-        // fire/throw：ProjectileAdded 事件 latch，按持有物分流（弓→fire，非弓→throw）。
-        private bool m_projectileFirePending;  // OnProjectileAdded 置位（仅本玩家）
-        private bool m_throwPending;           // UpdateFireState 分类后转交 UpdateThrowState
+        // fire/throw：ProjectileAdded 事件 latch（仅弓→fire）；投掷物走 Aim pending（IsPending(Aim) 触发 throw_overhand）。
+        private bool m_projectileFirePending;  // OnProjectileAdded 置位（仅本玩家，持弓/弩/火枪）
+        private bool m_throwRequest;           // IsPending(Aim) 收到 → 待下帧判 Base 是否播 throw（仿 pickup 延一帧，区分站定/移动）
+        private bool m_throwActive;            // throw 在 Base 播放锁（开播到 ThrowComplete/打断兜底）
         private bool m_fireJustCompleted;
         private bool m_throwJustCompleted;
 
@@ -205,7 +206,14 @@ namespace Game {
         /// 抛射物生成事件：仅本玩家（OwnerEntity==Entity）发射/投掷时置 latch，UpdateFireState/UpdateThrowState 消费。
         /// </summary>
         void OnProjectileAdded(Projectile projectile) {
-            if (projectile.OwnerEntity == Entity) {
+            if (projectile.OwnerEntity != Entity) {
+                return;
+            }
+            // 仅弓/弩/火枪走 ProjectileAdded 触发 fire（松手即抛）。投掷物走 Aim pending（throw_overhand 播 25% 才抛），
+            // 25% 后 FireProjectile 也触发本事件——此处忽略投掷物防重触 throw（pending 路径不依赖此事件）。
+            int blockValue = m_componentMiner != null ? m_componentMiner.ActiveBlockValue : 0;
+            Block block = blockValue != 0 ? BlocksManager.Blocks[Terrain.ExtractContents(blockValue)] : null;
+            if (block is BowBlock || block is CrossbowBlock || block is MusketBlock) {
                 m_projectileFirePending = true;
             }
         }
@@ -266,7 +274,8 @@ namespace Game {
             m_interactChest = false;
             m_interactJustCompleted = false;
             m_projectileFirePending = false;
-            m_throwPending = false;
+            m_throwRequest = false;
+            m_throwActive = false;
             m_fireJustCompleted = false;
             m_throwJustCompleted = false;
             // 旧动作 latch（attack/pickup/attacked）同步重置，防换模型残留（m_attackState=Winding 残留致虚假 attack 重播 + 过期 MeleeImpact）。
@@ -285,6 +294,9 @@ namespace Game {
                 m_componentMiner.SetRequiresPending(ComponentMiner.PendingAction.Place);
                 m_componentMiner.SetRequiresPending(ComponentMiner.PendingAction.Use);
                 m_componentMiner.SetRequiresPending(ComponentMiner.PendingAction.Interact);
+                // Aim pending：投掷物松手不立即抛，存 pending 等 throw_overhand 播 25%（AimImpact event）/被打断时 ExecuteAim 抛。
+                // 仅投掷物（API ComponentMiner.Aim 拦截处按 ThrowableBlockBehavior 判定）；弓/弩/火枪不 pending（松手即抛走 ProjectileAdded）。
+                m_componentMiner.SetRequiresPending(ComponentMiner.PendingAction.Aim);
             }
 
             // 注册 head IK 链（[neck, head]，SingleBoneIK）。幂等去重，换模型自动重注册。
@@ -538,17 +550,7 @@ namespace Game {
 
             // Base 层当前是否在播 pickup。本方法在 controller.Update 前，读的是上帧 Update 后状态。
             // AnimationPlayer 过渡期返回 TargetPlayer，故 transition 切入/稳态/PreservePose 末态均命中。
-            AnimationLayer baseLayer = null;
-            AnimationLayer[] layers = controller.m_layers;
-            if (layers != null) {
-                foreach (AnimationLayer l in layers) {
-                    if (l.Index == 0) {
-                        baseLayer = l;
-                        break;
-                    }
-                }
-            }
-            bool basePlayingPickup = baseLayer?.AnimationPlayer?.Animation?.Name == PickupSource;
+            bool basePlayingPickup = BaseLayerIsPlaying(controller, PickupSource);
 
             bool isPickingUp;
             if (m_pickupActive) {
@@ -761,7 +763,10 @@ namespace Game {
             // place/use/interact/fire/throw 期间压制 dig：dig_chop 与 place_chop/use_chop/interact_*/shoot_pistol 同在 Activity 层（Override 互斥），
             // throw_overhand 在 Base 层与 dig_harvest 同层；抢层时 dig（Activity 的 dig_chop 或 Base 的 dig_harvest）被遮蔽，
             // 跨层抢不触发 onInterrupt → 既无 DigLoopComplete 也无 DigInterrupt 清 m_digActive，锁卡住 → IsDigging 残留致 dig 重播。被压制时直接清 m_digActive。
-            bool digSuppressed = controller.Parameters.GetBool("IsPlacing")
+            // aimPending：投掷物 Aim pending 期（throw_overhand 尚未开播的首帧）也压制，防 OnAim Completed 的 Poke(false) 残留 PokingPhase 触发 dig_chop。
+            bool aimPending = m_componentMiner != null && m_componentMiner.IsPending(ComponentMiner.PendingAction.Aim);
+            bool digSuppressed = aimPending
+                              || controller.Parameters.GetBool("IsPlacing")
                               || controller.Parameters.GetBool("IsUsing")
                               || controller.Parameters.GetBool("IsInteracting")
                               || controller.Parameters.GetBool("IsFiring")
@@ -872,9 +877,8 @@ namespace Game {
         }
 
         /// <summary>
-        /// 开火/投掷 latch 消费（Activity fire / Base throw）：ProjectileAdded 事件置 m_projectileFirePending（仅本玩家）。
-        /// 持弓 → IsFiring=true（Activity shoot_pistol / Pistol_Shoot）；持非弓投掷物 → m_throwPending 转 UpdateThrowState。
-        /// 互斥：同一 latch 按持有物二选一。ShootComplete 事件下帧停。
+        /// 开火 latch 消费（Activity fire）：OnProjectileAdded 置 m_projectileFirePending（仅本玩家持弓/弩/火枪）→ IsFiring=true
+        /// （Activity shoot_pistol / Pistol_Shoot）。投掷物不走此（Aim pending 驱动 UpdateThrowState）。ShootComplete 事件下帧停。
         /// </summary>
         void UpdateFireState(AnimationController controller) {
             if (m_fireJustCompleted) {
@@ -882,47 +886,102 @@ namespace Game {
                 controller.Parameters.SetBool("IsFiring", false);
                 return;
             }
+            // 仅弓/弩/火枪（OnProjectileAdded 已过滤）。投掷物不走此（Aim pending 驱动 throw_overhand，见 UpdateThrowState）。
             if (m_projectileFirePending) {
                 m_projectileFirePending = false;
-                int blockValue = m_componentMiner != null ? m_componentMiner.ActiveBlockValue : 0;
-                Block block = blockValue != 0 ? BlocksManager.Blocks[Terrain.ExtractContents(blockValue)] : null;
-                if (block is BowBlock || block is CrossbowBlock || block is MusketBlock) {
-                    controller.Parameters.SetBool("IsFiring", true);
-                }
-                else {
-                    m_throwPending = true;
-                }
+                controller.Parameters.SetBool("IsFiring", true);
             }
         }
 
         /// <summary>
-        /// 投掷动作（Base 全身）：UpdateFireState 分类非弓后置 m_throwPending → IsThrowing=true（throw_overhand / OverhandThrow）。
-        /// ThrowComplete 事件下帧停。Base 层规则在 walk 之后：站定投掷（SpeedAbs<=0.2）覆盖移行播 throw；移动投掷 walk 先匹配不播 throw。
+        /// 投掷动作（Base 全身）：IsPending(Aim)（投掷物松手，API ComponentMiner.Aim 拦截存 pending）→ IsThrowing=true
+        /// （throw_overhand / OverhandThrow）。双锁仿 UpdatePickupState（m_throwRequest 待播 + m_throwActive 播放锁）：
+        /// 首帧设 IsThrowing + m_throwRequest 后 return（规则下帧才评估，本帧不查 Base）→ 次帧判 Base 是否真播 throw；
+        /// 站定 → Base 选 throw_overhand → 锁 → 播到 25% AimImpact event（或 onInterrupt 兜底）→ ExecuteAim 抛射；
+        /// 移动 → walk 胜出 throw 从未播 → 补偿立即抛 + 清；25% 前被打断 → 锁着但 throw 离开 Base → pending 残留补偿抛。
+        /// Poke(false) 清理：OnAim Completed（ExecuteAim 内）副作用设 PokingPhase=0.0001（vanilla 挖矿 poke 启动），
+        /// 投掷 anim 不需它，各结束分支清 0 防 UpdateDigState 误判 digging 播 dig_chop。ThrowComplete 事件下帧停。
         /// </summary>
         void UpdateThrowState(AnimationController controller) {
             if (m_throwJustCompleted) {
                 m_throwJustCompleted = false;
+                m_throwActive = false;
+                ClearThrowPokingPhase();
                 controller.Parameters.SetBool("IsThrowing", false);
                 return;
             }
-            if (m_throwPending) {
-                m_throwPending = false;
-                controller.Parameters.SetBool("IsThrowing", true);
-            }
-            // 兜底：IsThrowing=true 但 Base 层未播 throw_overhand（walk/run 等高优先级胜出致 throw 从未启动，
-            // ThrowComplete 永不触发）→ 强制清 IsThrowing 防卡死（否则停步后才播误导延迟动画）。仿 UpdatePickupState 层检测兜底。
-            if (controller.Parameters.GetBool("IsThrowing")) {
-                AnimationLayer baseLayer = null;
-                AnimationLayer[] layers = controller.m_layers;
-                if (layers != null) {
-                    foreach (AnimationLayer l in layers) {
-                        if (l.Index == 0) { baseLayer = l; break; }
+            bool aimPending = m_componentMiner != null && m_componentMiner.IsPending(ComponentMiner.PendingAction.Aim);
+            bool basePlayingThrow = BaseLayerIsPlaying(controller, OverhandThrowSource);
+
+            if (m_throwActive) {
+                // 锁：throw 在 Base 播。等 ThrowComplete（停）/ 25% AimImpact event（ExecuteAim 抛）。
+                if (!basePlayingThrow) {
+                    // 25% 前被打断（ThrowComplete 未到）。pending 残留（25% event 未触发）→ 补偿抛；已抛则 aimPending=false no-op。
+                    m_throwActive = false;
+                    if (aimPending) {
+                        m_componentMiner.ExecuteAim(ComponentMiner.TargetMode.Pending);
                     }
-                }
-                if (baseLayer?.AnimationPlayer?.Animation?.Name != OverhandThrowSource) {
+                    ClearThrowPokingPhase();
                     controller.Parameters.SetBool("IsThrowing", false);
                 }
+                else {
+                    controller.Parameters.SetBool("IsThrowing", true);
+                }
+                return;
             }
+
+            if (!aimPending) {
+                m_throwRequest = false;
+                controller.Parameters.SetBool("IsThrowing", false);
+                return;
+            }
+
+            // aimPending==true, 未锁
+            if (m_throwRequest) {
+                // 已给规则一帧选 throw（上帧设 request+IsThrowing）。判 Base 是否真播：
+                if (basePlayingThrow) {
+                    // 站定开播 → 锁，等 25% AimImpact event（HandleAnimationEvent）调 ExecuteAim 抛射。
+                    m_throwRequest = false;
+                    m_throwActive = true;
+                    controller.Parameters.SetBool("IsThrowing", true);
+                }
+                else {
+                    // 移动（walk 胜出，给一帧仍没播 throw）→ throw 不会到 25% → 补偿立即抛 + 清。
+                    m_throwRequest = false;
+                    controller.Parameters.SetBool("IsThrowing", false);
+                    m_componentMiner.ExecuteAim(ComponentMiner.TargetMode.Pending);
+                    ClearThrowPokingPhase();
+                }
+                return;
+            }
+
+            // 首帧：aimPending 刚到。设 request + IsThrowing，给规则下帧评估选 throw。本帧不查 base（规则尚未评估）。
+            m_throwRequest = true;
+            controller.Parameters.SetBool("IsThrowing", true);
+        }
+
+        /// <summary>清 OnAim Completed 副作用 Poke(false) 设的 PokingPhase 残留，防投掷后 UpdateDigState 误播 dig_chop。</summary>
+        void ClearThrowPokingPhase() {
+            // 投掷时持雪球/炸弹等不挖（无 DigCellFace），PokingPhase 仅由 Poke(false) 启动；直接清 0 不影响真挖（真挖不进 throw 路径）。
+            // 打断跨帧时 ComponentMiner.Update 已 tick 涨过 0.001，故不限阈值全清（>0 即清）。
+            if (m_componentMiner != null && m_componentMiner.PokingPhase > 0f) {
+                m_componentMiner.PokingPhase = 0f;
+            }
+        }
+
+        /// <summary>
+        /// Base 层（Index==0）当前是否播指定 source（查 Animation.Name）。层回退/双锁判定共用，替内联遍历。
+        /// </summary>
+        static bool BaseLayerIsPlaying(AnimationController controller, string sourceName) {
+            AnimationLayer[] layers = controller.m_layers;
+            if (layers != null) {
+                foreach (AnimationLayer l in layers) {
+                    if (l.Index == 0) {
+                        return l.AnimationPlayer?.Animation?.Name == sourceName;
+                    }
+                }
+            }
+            return false;
         }
 
         /// <summary>
@@ -1052,6 +1111,12 @@ namespace Game {
                 }
                 case "ThrowComplete": {
                     m_throwJustCompleted = true;
+                    break;
+                }
+                case "AimImpact": {
+                    // throw_overhand 播到 25%（events）或被打断（onInterrupt）均走此：ExecuteAim 抛射（Pending=松手存的 ray）。
+                    // 防双抛：ExecuteAim 消费 m_aimPendingRay 置 null，25% event 抛后若再 onInterrupt → null no-op。
+                    m_componentMiner?.ExecuteAim(ComponentMiner.TargetMode.Pending);
                     break;
                 }
             }

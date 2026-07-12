@@ -253,7 +253,11 @@
       "loop": false,
       "preservePose": true,
       "blendDuration": 0.05,
-      "onComplete": { "type": "trigger", "name": "ThrowComplete" }
+      "events": [
+        { "time": 0.25, "name": "AimImpact", "data": "pending" }
+      ],
+      "onComplete": { "type": "trigger", "name": "ThrowComplete" },
+      "onInterrupt": { "type": "trigger", "name": "AimImpact" }
     }
   },
   "states": {
