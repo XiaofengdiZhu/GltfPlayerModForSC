@@ -141,11 +141,6 @@
       "loop": true,
       "blendDuration": 0.3
     },
-    "chop": {
-      "source": "TreeChopping_Loop",
-      "loop": true,
-      "blendDuration": 0.2
-    },
     "attack_cross": {
       "source": "Punch_Cross",
       "loop": false,
@@ -177,6 +172,88 @@
       "loop": true,
       "blendDuration": 0.5,
       "rootBoneTranslation": [0, 0.15, 0]
+    },
+    "dig_harvest": {
+      "source": "Farm_Harvest",
+      "loop": false,
+      "preservePose": true,
+      "blendDuration": 0.1,
+      "onComplete": { "type": "trigger", "name": "DigLoopComplete" },
+      "onInterrupt": { "type": "trigger", "name": "DigInterrupt" }
+    },
+    "dig_chop": {
+      "source": "TreeChopping_Loop",
+      "loop": false,
+      "preservePose": true,
+      "blendDuration": 0.1,
+      "onComplete": { "type": "trigger", "name": "DigLoopComplete" },
+      "onInterrupt": { "type": "trigger", "name": "DigInterrupt" }
+    },
+    "place_water": {
+      "source": "Farm_Watering",
+      "loop": false,
+      "preservePose": true,
+      "blendDuration": 0.1,
+      "onComplete": { "type": "trigger", "name": "PlaceLoopComplete" },
+      "onInterrupt": { "type": "trigger", "name": "PlaceLoopComplete" }
+    },
+    "place_chop": {
+      "source": "TreeChopping_Loop",
+      "loop": false,
+      "preservePose": true,
+      "blendDuration": 0.1,
+      "onComplete": { "type": "trigger", "name": "PlaceLoopComplete" },
+      "onInterrupt": { "type": "trigger", "name": "PlaceLoopComplete" }
+    },
+    "use_chop": {
+      "source": "TreeChopping_Loop",
+      "loop": false,
+      "preservePose": true,
+      "blendDuration": 0.1,
+      "onComplete": { "type": "trigger", "name": "UseLoopComplete" },
+      "onInterrupt": { "type": "trigger", "name": "UseLoopComplete" }
+    },
+    "interact_chest": {
+      "source": "Chest_Open",
+      "loop": false,
+      "preservePose": true,
+      "blendDuration": 0.1,
+      "events": [
+        { "time": 0.5, "name": "InteractImpact", "data": "pending" }
+      ],
+      "onComplete": { "type": "trigger", "name": "InteractComplete" },
+      "onInterrupt": { "type": "trigger", "name": "InteractComplete" }
+    },
+    "interact_general": {
+      "source": "Interact",
+      "loop": false,
+      "preservePose": true,
+      "blendDuration": 0.1,
+      "speed": 2.0,
+      "events": [
+        { "time": 0.4, "name": "InteractImpact", "data": "pending" }
+      ],
+      "onComplete": { "type": "trigger", "name": "InteractComplete" },
+      "onInterrupt": { "type": "trigger", "name": "InteractComplete" }
+    },
+    "aim_pistol": {
+      "source": "Pistol_Idle_Loop",
+      "loop": true,
+      "blendDuration": 0.15
+    },
+    "shoot_pistol": {
+      "source": "Pistol_Shoot",
+      "loop": false,
+      "preservePose": true,
+      "blendDuration": 0.05,
+      "onComplete": { "type": "trigger", "name": "ShootComplete" }
+    },
+    "throw_overhand": {
+      "source": "OverhandThrow",
+      "loop": false,
+      "preservePose": true,
+      "blendDuration": 0.05,
+      "onComplete": { "type": "trigger", "name": "ThrowComplete" }
     }
   },
   "states": {
@@ -281,6 +358,12 @@
             "speed": "[MoveSpeed] * 0.8"
           }
         },
+        { "condition": "[IsThrowing] == true", "animation": "throw_overhand" },
+        { "condition": "[IsDigging] == true && [IsDiggingPlant] == true", "animation": "dig_harvest" },
+        {
+          "condition": "[IsPickingUp] == true",
+          "animation": "pickup"
+        },
         {
           "condition": "[IsHoldingMeleeWeapon] == true",
           "animation": "melee_idle"
@@ -294,10 +377,6 @@
           "animation": "idle_tired"
         },
         {
-          "condition": "[IsPickingUp] == true",
-          "animation": "pickup"
-        },
-        {
           "condition": "true",
           "animation": "idle"
         }
@@ -306,6 +385,15 @@
     "activity": {
       "layer": "Activity",
       "rules": [
+        { "condition": "[IsFiring] == true", "animation": "shoot_pistol" },
+        { "condition": "[IsInteracting] == true && [IsInteractChest] == true", "animation": "interact_chest" },
+        { "condition": "[IsInteracting] == true", "animation": "interact_general" },
+        { "condition": "[IsPlacing] == true && [IsPlacingPlant] == true", "animation": "place_water" },
+        { "condition": "[IsPlacing] == true", "animation": "place_chop" },
+        { "condition": "[IsUsing] == true", "animation": "use_chop" },
+        { "condition": "[IsDigging] == true && [IsDiggingPlant] == true", "animation": null },
+        { "condition": "[IsDigging] == true", "animation": "dig_chop" },
+        { "condition": "[IsAiming] == true", "animation": "aim_pistol" },
         {
           "condition": "[IsAttacking] == true && [AttackComboParity] == 0",
           "animation": "attack_cross"
@@ -313,10 +401,6 @@
         {
           "condition": "[IsAttacking] == true && [AttackComboParity] == 1",
           "animation": "attack_jab"
-        },
-        {
-          "condition": "[PokingPhase] > 0.0",
-          "animation": "chop"
         },
         {
           "condition": "true",
@@ -399,6 +483,16 @@
     "AttackComboParity": 0.0,
     "MoveSpeed": 0.0,
     "WalkOrderX": 0.0,
-    "WalkOrderY": 0.0
+    "WalkOrderY": 0.0,
+    "IsDigging": false,
+    "IsDiggingPlant": false,
+    "IsPlacing": false,
+    "IsPlacingPlant": false,
+    "IsUsing": false,
+    "IsInteracting": false,
+    "IsInteractChest": false,
+    "IsAiming": false,
+    "IsFiring": false,
+    "IsThrowing": false
   }
 }

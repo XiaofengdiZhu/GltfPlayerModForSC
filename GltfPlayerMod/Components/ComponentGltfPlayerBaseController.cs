@@ -27,6 +27,7 @@ namespace Game {
 
         // 受击动画 source 名（须与 GltfPlayer.json attacked 别名 source 一致；换动画须同步改此处）
         private const string AttackedSource = "Pistol_Aim_Up";
+        private const string OverhandThrowSource = "OverhandThrow";
 
         // 当前跳跃相位
         private string m_jumpPhase = JumpPhaseGround;
@@ -111,6 +112,31 @@ namespace Game {
 
         private AttackComboMode m_attackComboMode = AttackComboMode.Complete;
 
+        // ===== 全动作 Activity 动画（Dig/Place/Use/Interact/Aim/fire/throw）=====
+        // 引用（可空：服装 model 无 miner/player）
+        private ComponentPlayer m_componentPlayer;
+        private SubsystemTerrain m_subsystemTerrain;
+        private SubsystemProjectiles m_subsystemProjectiles;
+
+        // Place/Use：pending 即时派发（ExecutePlace/Use 当帧），anim cosmetic 单次播（loop=false）；
+        // onComplete（PlaceLoopComplete/UseLoopComplete）→ justCompleted → 下帧强制 IsPlacing/IsUsing=false 停。
+        // 注：loop 必须 false——CheckAnimationCompletion 仅 !isLooping 才触发 onComplete（AnimationController.cs:668-681），
+        // loop=true 的 onComplete 永不触发 → IsPlacing 卡死 → 动画无限循环。
+        private bool m_placingPlant;
+        private bool m_placeJustCompleted;     // PlaceLoopComplete → 下帧强制 IsPlacing=false 停
+        private bool m_useJustCompleted;
+
+        // Interact：pending 延迟到 InteractImpact 事件才 ExecuteInteract；m_interactActive 防 pending 期每帧重分类。
+        private bool m_interactActive;
+        private bool m_interactChest;          // pending 目标分类（用公开 InteractPendingValue 取按下时存的目标）
+        private bool m_interactJustCompleted;
+
+        // fire/throw：ProjectileAdded 事件 latch，按持有物分流（弓→fire，非弓→throw）。
+        private bool m_projectileFirePending;  // OnProjectileAdded 置位（仅本玩家）
+        private bool m_throwPending;           // UpdateFireState 分类后转交 UpdateThrowState
+        private bool m_fireJustCompleted;
+        private bool m_throwJustCompleted;
+
         // ===== head IK 视线追踪 =====
         // head IK 链名（OnControllerCreated 注册，SyncAnimationParameters 每帧 SetIKAim）
         private const string HeadIKChain = "Head";
@@ -160,12 +186,38 @@ namespace Game {
             m_componentMiner = Entity.FindComponent<ComponentMiner>();
             m_componentPickableGatherer = Entity.FindComponent<ComponentPickableGatherer>();
             m_subsystemPickables = Project.FindSubsystem<SubsystemPickables>();
+            m_componentPlayer = Entity.FindComponent<ComponentPlayer>();
+            m_subsystemTerrain = Project.FindSubsystem<SubsystemTerrain>();
+            m_subsystemProjectiles = Project.FindSubsystem<SubsystemProjectiles>();
 
             // 订阅受击事件：ComponentBody.Attacked 仅在攻击命中时触发（Attackment.cs:227），环境伤害不触发。
             var componentBody = m_componentCreature.ComponentBody;
             if (componentBody != null) {
                 componentBody.Attacked += delegate { m_attackedPending = true; };
             }
+            // 订阅抛射物生成：仅运行时发射触发（世界加载不触发），按 OwnerEntity==本实体过滤本玩家发射/投掷。
+            if (m_subsystemProjectiles != null) {
+                m_subsystemProjectiles.ProjectileAdded += OnProjectileAdded;
+            }
+        }
+
+        /// <summary>
+        /// 抛射物生成事件：仅本玩家（OwnerEntity==Entity）发射/投掷时置 latch，UpdateFireState/UpdateThrowState 消费。
+        /// </summary>
+        void OnProjectileAdded(Projectile projectile) {
+            if (projectile.OwnerEntity == Entity) {
+                m_projectileFirePending = true;
+            }
+        }
+
+        /// <summary>
+        /// 退订抛射物事件，防死控制器被 subsystem 委托保活。
+        /// </summary>
+        public override void Dispose() {
+            if (m_subsystemProjectiles != null) {
+                m_subsystemProjectiles.ProjectileAdded -= OnProjectileAdded;
+            }
+            base.Dispose();
         }
 
         /// <summary>
@@ -192,10 +244,47 @@ namespace Game {
             controller.Parameters.SetBool("IsAttacked", false);
             controller.Parameters.SetBool("IsAttacking", false);
             controller.Parameters.SetFloat("AttackComboParity", 0f);
-            // 配置 Attack 走 pending（延迟到 MeleeImpact 事件触发伤害）。仅 glTF 玩家有此 controller；
+            controller.Parameters.SetBool("IsDigging", false);
+            controller.Parameters.SetBool("IsDiggingPlant", false);
+            controller.Parameters.SetBool("IsPlacing", false);
+            controller.Parameters.SetBool("IsPlacingPlant", false);
+            controller.Parameters.SetBool("IsUsing", false);
+            controller.Parameters.SetBool("IsInteracting", false);
+            controller.Parameters.SetBool("IsInteractChest", false);
+            controller.Parameters.SetBool("IsAiming", false);
+            controller.Parameters.SetBool("IsFiring", false);
+            controller.Parameters.SetBool("IsThrowing", false);
+
+            // 换模型（SetModel 重建 controller）时重置 latch 字段，防残留驱动 Update* 致虚假 dig/place/use/interact/fire/throw 循环。
+            m_digActive = false;
+            m_digPlantCached = false;
+            m_digJustCompleted = false;
+            m_placingPlant = false;
+            m_placeJustCompleted = false;
+            m_useJustCompleted = false;
+            m_interactActive = false;
+            m_interactChest = false;
+            m_interactJustCompleted = false;
+            m_projectileFirePending = false;
+            m_throwPending = false;
+            m_fireJustCompleted = false;
+            m_throwJustCompleted = false;
+            // 旧动作 latch（attack/pickup/attacked）同步重置，防换模型残留（m_attackState=Winding 残留致虚假 attack 重播 + 过期 MeleeImpact）。
+            m_attackState = AttackState.Idle;
+            m_attackActive = false;
+            m_attackJustCompleted = false;
+            m_pickupActive = false;
+            m_pickupJustCompleted = false;
+            m_attackedActive = false;
+            m_attackedPending = false;
+            m_attackedJustCompleted = false;
+            // 配置 Attack/Place/Use/Interact 走 pending。仅 glTF 玩家有此 controller；
             // dae/AI 的 miner 无 controller → m_requiresPending 恒 None → 原版立即执行。每次 controller 重建（换模型）重设，幂等。
             if (m_componentMiner != null) {
                 m_componentMiner.SetRequiresPending(ComponentMiner.PendingAction.Attack);
+                m_componentMiner.SetRequiresPending(ComponentMiner.PendingAction.Place);
+                m_componentMiner.SetRequiresPending(ComponentMiner.PendingAction.Use);
+                m_componentMiner.SetRequiresPending(ComponentMiner.PendingAction.Interact);
             }
 
             // 注册 head IK 链（[neck, head]，SingleBoneIK）。幂等去重，换模型自动重注册。
@@ -214,6 +303,13 @@ namespace Game {
             UpdatePickupState(controller);
             UpdateAttackedState(controller);
             UpdateAttackState(controller);
+            UpdateDigState(controller);
+            UpdatePlaceState(controller);
+            UpdateUseState(controller);
+            UpdateInteractState(controller);
+            UpdateAimState(controller);
+            UpdateFireState(controller);
+            UpdateThrowState(controller);
             UpdateMoveSpeed(controller);
 
             // head IK：兜底补注册（OnControllerCreated 时 model 未就绪则此处补）+ 每帧设 aim
@@ -392,9 +488,9 @@ namespace Game {
         void UpdateMeleeWeaponState(AnimationController controller) {
             bool holdingMeleeWeapon = false;
             if (m_componentMiner != null) {
-                int value = m_componentMiner.ActiveBlockValue;
-                if (value != 0) {
-                    Block block = BlocksManager.Blocks[Terrain.ExtractContents(value)];
+                int blockValue = m_componentMiner.ActiveBlockValue;
+                if (blockValue != 0) {
+                    Block block = BlocksManager.Blocks[Terrain.ExtractContents(blockValue)];
                     holdingMeleeWeapon = block is WoodenClubBlock
                         || block is StoneClubBlock
                         || block is SpearBlock
@@ -638,6 +734,215 @@ namespace Game {
         }
 
         /// <summary>
+        /// Dig 动作（cosmetic，Activity 层）：PokingPhase>0 判挖掘中。目标 CrossBlock（草/花等 X 形植被）→ dig_harvest（Farm_Harvest），
+        /// 否则 dig_chop（TreeChopping_Loop）。Dig 不走 pending（连续渐进），vanilla ComponentMiner 自行挖掘，动画纯装饰。
+        /// 播完语义（仿 attack/attacked）：dig_harvest/chop loop=false + onComplete(DigLoopComplete)。m_digActive 锁保持播放中 IsDigging=true，
+        /// 停止挖掘（PokingPhase 归零）后 anim 继续到 onComplete 才停（不截断）。onComplete→justCompleted→SetBool false 一帧（path 变）→
+        /// 仍挖则下帧重选重播，停则停用。植物瞬毁 DigCellFace 仅首帧有效 → m_digPlantCached 缓存，PokingPhase 期沿用。
+        /// </summary>
+        bool m_digPlantCached;  // dig 目标植物分类缓存：DigCellFace 有效时更新，植物瞬毁仅首帧有效，PokingPhase 期沿用
+        bool m_digActive;  // dig 播放锁：挖中（PokingPhase>0）置 true，停挖后保持到 DigLoopComplete（dig_chop 播完）才停。避免停挖瞬断 anim
+        bool m_digJustCompleted;  // dig 刚播完（DigLoopComplete 事件）：下帧强制 IsDigging=false 一帧（path 变）重播/停
+
+        void UpdateDigState(AnimationController controller) {
+            // dig 刚播完：强制 IsDigging=false 一帧让规则选 null（path 变）。仍挖→下帧重选重播；停→停用（anim 已 onComplete 自然播完）。
+            if (m_digJustCompleted) {
+                m_digJustCompleted = false;
+                m_digActive = false;
+                controller.Parameters.SetBool("IsDigging", false);
+                if (m_componentMiner == null || m_componentMiner.PokingPhase <= 0f) {
+                    m_digPlantCached = false;
+                }
+                return;
+            }
+
+            bool digging = m_componentMiner != null && m_componentMiner.PokingPhase > 0f;
+
+            // place/use/interact/fire/throw 期间压制 dig：dig_chop 与 place_chop/use_chop/interact_*/shoot_pistol 同在 Activity 层（Override 互斥），
+            // throw_overhand 在 Base 层与 dig_harvest 同层；抢层时 dig（Activity 的 dig_chop 或 Base 的 dig_harvest）被遮蔽，
+            // 跨层抢不触发 onInterrupt → 既无 DigLoopComplete 也无 DigInterrupt 清 m_digActive，锁卡住 → IsDigging 残留致 dig 重播。被压制时直接清 m_digActive。
+            bool digSuppressed = controller.Parameters.GetBool("IsPlacing")
+                              || controller.Parameters.GetBool("IsUsing")
+                              || controller.Parameters.GetBool("IsInteracting")
+                              || controller.Parameters.GetBool("IsFiring")
+                              || controller.Parameters.GetBool("IsThrowing");
+            if (digSuppressed) {
+                m_digActive = false;
+            }
+            else if (digging) {
+                m_digActive = true;
+            }
+            // 停挖后不清（保持 dig anim 播完）；DigLoopComplete（HandleAnimationEvent）/ m_digJustCompleted 分支负责清。
+
+            // 分类（DigCellFace 有效时更新；植物瞬毁多帧无效，用缓存）
+            if (digging && m_componentMiner.DigCellFace.HasValue && m_subsystemTerrain != null) {
+                CellFace c = m_componentMiner.DigCellFace.Value;
+                int blockValue = m_subsystemTerrain.Terrain.GetCellValue(c.X, c.Y, c.Z);
+                Block block = BlocksManager.Blocks[Terrain.ExtractContents(blockValue)];
+                m_digPlantCached = block is CrossBlock;
+            }
+
+            // IsDigging：未被 place/use/interact 压制时，挖中（PokingPhase>0）或播放锁中（停挖后 anim 播完前保持）
+            bool isDigging = !digSuppressed && (digging || m_digActive);
+            controller.Parameters.SetBool("IsDigging", isDigging);
+            controller.Parameters.SetBool("IsDiggingPlant", m_digPlantCached);
+        }
+
+        /// <summary>
+        /// Place 动作（Activity 层）：pending 即时派发。检测 IsPending(Place) 当帧即 ExecutePlace(Pending)（放置+清 pending），
+        /// 方块立即生效（1 帧延迟）；IsPlacing=true 触发 place 循环动画。持有 SaplingBlock/SeedsBlock → place_water（Farm_Watering），
+        /// 否则 place_chop（TreeChopping_Loop）。循环末（PlaceLoopComplete）：播放中又收到新 place → 续播；否则停。
+        /// </summary>
+        void UpdatePlaceState(AnimationController controller) {
+            if (m_placeJustCompleted) {
+                m_placeJustCompleted = false;
+                controller.Parameters.SetBool("IsPlacing", false);
+                return;
+            }
+            if (m_componentMiner != null
+                && m_componentMiner.IsPending(ComponentMiner.PendingAction.Place)) {
+                int blockValue = m_componentMiner.ActiveBlockValue;
+                // ExecutePlace(Reraycast) 触发时刻重射线；未命中/DoPlace 失败返 false（pending 已清，下帧不重入）→ 不播 place anim。
+                bool placed = m_componentMiner.ExecutePlace(ComponentMiner.TargetMode.Reraycast);
+                if (placed) {
+                    Block block = blockValue != 0 ? BlocksManager.Blocks[Terrain.ExtractContents(blockValue)] : null;
+                    m_placingPlant = block is SaplingBlock || block is SeedsBlock;
+                    controller.Parameters.SetBool("IsPlacingPlant", m_placingPlant);
+                    controller.Parameters.SetBool("IsPlacing", true);
+                }
+            }
+        }
+
+        /// <summary>
+        /// Use 动作（Activity 层）：pending 即时派发（同 UpdatePlaceState）。ExecuteUse(Pending) 当帧生效。
+        /// 普通方块统一 use_chop（TreeChopping_Loop）。
+        /// </summary>
+        void UpdateUseState(AnimationController controller) {
+            if (m_useJustCompleted) {
+                m_useJustCompleted = false;
+                controller.Parameters.SetBool("IsUsing", false);
+                return;
+            }
+            if (m_componentMiner != null
+                && m_componentMiner.IsPending(ComponentMiner.PendingAction.Use)) {
+                // ExecuteUse(Reraycast) 失败（等级不足/DoUse 失败，pending 已清，下帧不重入）→ 不播 use anim。
+                bool used = m_componentMiner.ExecuteUse(ComponentMiner.TargetMode.Reraycast);
+                if (used) {
+                    controller.Parameters.SetBool("IsUsing", true);
+                }
+            }
+        }
+
+        /// <summary>
+        /// Interact 动作（Activity 层）：pending 延迟派发。检测 IsPending(Interact) → 自射线分类目标（箱子?）→ IsInteracting=true 播动画。
+        /// m_interactActive 防 pending 期每帧重分类（pending 持续到 impact 才清）。InteractImpact 事件（chest 0.5/general 0.4）调 ExecuteInteract(Pending)。
+        /// 目标是 ChestBlock → interact_chest（Chest_Open）；否则 interact_general（Interact speed 2）。ClassifyInteractChest 用 InteractPendingValue 分类。
+        /// </summary>
+        void UpdateInteractState(AnimationController controller) {
+            bool isPending = m_componentMiner != null
+                && m_componentMiner.IsPending(ComponentMiner.PendingAction.Interact);
+            if (m_interactJustCompleted) {
+                m_interactJustCompleted = false;
+                controller.Parameters.SetBool("IsInteracting", false);
+                return;
+            }
+            if (isPending
+                && !m_interactActive) {
+                m_interactChest = ClassifyInteractChest();
+                controller.Parameters.SetBool("IsInteractChest", m_interactChest);
+                controller.Parameters.SetBool("IsInteracting", true);
+                m_interactActive = true;
+            }
+        }
+
+        /// <summary>
+        /// Aim 动作（cosmetic hold，Activity 层）：轮询 ComponentPlayer.m_aim.HasValue + 持有 Bow/Crossbow/Musket。
+        /// 瞄准中 → aim_pistol（Pistol_Idle_Loop）循环；松手/换武器即停。开火动画由 UpdateFireState（ProjectileAdded）触发。
+        /// </summary>
+        void UpdateAimState(AnimationController controller) {
+            bool aiming = false;
+            if (m_componentPlayer != null && m_componentPlayer.m_aim.HasValue && m_componentMiner != null) {
+                int blockValue = m_componentMiner.ActiveBlockValue;
+                if (blockValue != 0) {
+                    Block block = BlocksManager.Blocks[Terrain.ExtractContents(blockValue)];
+                    aiming = block is BowBlock || block is CrossbowBlock || block is MusketBlock;
+                }
+            }
+            controller.Parameters.SetBool("IsAiming", aiming);
+        }
+
+        /// <summary>
+        /// 开火/投掷 latch 消费（Activity fire / Base throw）：ProjectileAdded 事件置 m_projectileFirePending（仅本玩家）。
+        /// 持弓 → IsFiring=true（Activity shoot_pistol / Pistol_Shoot）；持非弓投掷物 → m_throwPending 转 UpdateThrowState。
+        /// 互斥：同一 latch 按持有物二选一。ShootComplete 事件下帧停。
+        /// </summary>
+        void UpdateFireState(AnimationController controller) {
+            if (m_fireJustCompleted) {
+                m_fireJustCompleted = false;
+                controller.Parameters.SetBool("IsFiring", false);
+                return;
+            }
+            if (m_projectileFirePending) {
+                m_projectileFirePending = false;
+                int blockValue = m_componentMiner != null ? m_componentMiner.ActiveBlockValue : 0;
+                Block block = blockValue != 0 ? BlocksManager.Blocks[Terrain.ExtractContents(blockValue)] : null;
+                if (block is BowBlock || block is CrossbowBlock || block is MusketBlock) {
+                    controller.Parameters.SetBool("IsFiring", true);
+                }
+                else {
+                    m_throwPending = true;
+                }
+            }
+        }
+
+        /// <summary>
+        /// 投掷动作（Base 全身）：UpdateFireState 分类非弓后置 m_throwPending → IsThrowing=true（throw_overhand / OverhandThrow）。
+        /// ThrowComplete 事件下帧停。Base 层规则在 walk 之后：站定投掷（SpeedAbs<=0.2）覆盖移行播 throw；移动投掷 walk 先匹配不播 throw。
+        /// </summary>
+        void UpdateThrowState(AnimationController controller) {
+            if (m_throwJustCompleted) {
+                m_throwJustCompleted = false;
+                controller.Parameters.SetBool("IsThrowing", false);
+                return;
+            }
+            if (m_throwPending) {
+                m_throwPending = false;
+                controller.Parameters.SetBool("IsThrowing", true);
+            }
+            // 兜底：IsThrowing=true 但 Base 层未播 throw_overhand（walk/run 等高优先级胜出致 throw 从未启动，
+            // ThrowComplete 永不触发）→ 强制清 IsThrowing 防卡死（否则停步后才播误导延迟动画）。仿 UpdatePickupState 层检测兜底。
+            if (controller.Parameters.GetBool("IsThrowing")) {
+                AnimationLayer baseLayer = null;
+                AnimationLayer[] layers = controller.m_layers;
+                if (layers != null) {
+                    foreach (AnimationLayer l in layers) {
+                        if (l.Index == 0) { baseLayer = l; break; }
+                    }
+                }
+                if (baseLayer?.AnimationPlayer?.Animation?.Name != OverhandThrowSource) {
+                    controller.Parameters.SetBool("IsThrowing", false);
+                }
+            }
+        }
+
+        /// <summary>
+        /// Interact 目标是否箱子：用公开 InteractPendingValue 取按下交互键时存的目标方块值（地形/移动方块通用）。
+        /// </summary>
+        bool ClassifyInteractChest() {
+            if (m_componentMiner == null) {
+                return false;
+            }
+            // 用 pending 存的真实目标（按下交互键时准星射线命中），非自眼位射线——
+            // 自定义模型 EyeRotation 可能与相机视角不同步导致自射线 miss。
+            int blockValue = m_componentMiner.InteractPendingValue;
+            if (blockValue == 0) {
+                return false;
+            }
+            Block block = BlocksManager.Blocks[Terrain.ExtractContents(blockValue)];
+            return block is ChestBlock;
+        }
+
+        /// <summary>
         /// 动画事件：处理跳跃/起床动画完成 trigger，推进状态。
         /// </summary>
         public override void HandleAnimationEvent(AnimationController controller, AnimationEvent animationEvent) {
@@ -669,10 +974,11 @@ namespace Game {
                     break;
                 }
                 case "MeleeImpact": {
-                    // Data: "targetMode|comboMode"（如 "pending|complete"/"reraycast|impact"）；缺省 pending|complete。
+                    // Data: "targetMode|comboMode"（如 "reraycast|complete"）；缺省 reraycast|complete。
+                    // targetMode 固定 Reraycast（impact 时刻重射线取当前目标）；comboMode 解析 impact/complete。
                     // ApplyAnimationEvents（AnimationController.cs）把 alias events 的 Data 直传本事件 Parameter。
                     string data = animationEvent.Parameter as string;
-                    var mode = ComponentMiner.TargetMode.Pending;
+                    var mode = ComponentMiner.TargetMode.Reraycast;
                     AttackComboMode combo = AttackComboMode.Complete;
                     if (!string.IsNullOrEmpty(data)) {
                         string[] parts = data.Split('|');
@@ -694,6 +1000,58 @@ namespace Game {
                     m_attackParity ^= 1;
                     m_attackActive = false;
                     m_attackJustCompleted = true;
+                    break;
+                }
+                case "DigLoopComplete": {
+                    // dig 单次播完（loop=false）：标记完成，下帧强制 IsDigging=false（path 变）重播或停。
+                    m_digActive = false;
+                    m_digJustCompleted = true;
+                    break;
+                }
+                case "DigInterrupt": {
+                    // dig 被抢中断（place/use/attacked 等切走 dig_chop/dig_harvest，未自然播完无 DigLoopComplete）：
+                    // 清 m_digActive 防 IsDigging 卡 true（否则 place 后 dig_chop 规则匹配重播第二遍）。挖中下帧重设。
+                    m_digActive = false;
+                    break;
+                }
+                case "PlaceLoopComplete": {
+                    // place 播完（onComplete）或被打断（onInterrupt）均走此：标记完成，下帧强制 IsPlacing=false 停。
+                    // onInterrupt 设计差异：place/use/interact 是 latch 触发（非持续条件），onInterrupt 复用 *Complete 走 justCompleted
+                    // 才能主动清 IsXxx param 离开 anim；dig/pickup 用单独 *Interrupt trigger（仅清锁），因靠持续条件下帧自然评估。
+                    m_placeJustCompleted = true;
+                    break;
+                }
+                case "UseLoopComplete": {
+                    // use 播完（onComplete）或被打断（onInterrupt）均走此（同 PlaceLoopComplete）。
+                    m_useJustCompleted = true;
+                    break;
+                }
+                case "InteractImpact": {
+                    // Data: "targetMode"（pending/reraycast）；缺省 reraycast。impact 时刻重射线取当前目标（与 MeleeImpact 一致），
+                    // data 显式 "pending" 当前不生效（targetMode 固定 Reraycast），保留解析仅为对称/未来扩展。
+                    var mode = ComponentMiner.TargetMode.Reraycast;
+                    string data = animationEvent.Parameter as string;
+                    if (!string.IsNullOrEmpty(data)
+                        && data.Split('|')[0].Equals("reraycast", StringComparison.OrdinalIgnoreCase)) {
+                        mode = ComponentMiner.TargetMode.Reraycast;
+                    }
+                    m_componentMiner?.ExecuteInteract(mode);
+                    break;
+                }
+                case "InteractComplete": {
+                    // interact 播完或被打断均走此：清锁 + 分类标志（m_interactChest/IsInteractChest 防残留），标记完成下帧强制 IsInteracting=false。
+                    m_interactActive = false;
+                    m_interactChest = false;
+                    controller.Parameters.SetBool("IsInteractChest", false);
+                    m_interactJustCompleted = true;
+                    break;
+                }
+                case "ShootComplete": {
+                    m_fireJustCompleted = true;
+                    break;
+                }
+                case "ThrowComplete": {
+                    m_throwJustCompleted = true;
                     break;
                 }
             }
