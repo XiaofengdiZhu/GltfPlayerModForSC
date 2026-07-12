@@ -194,9 +194,10 @@ namespace Game {
         private const float MaxHeadPitchDegrees = 80f;  //  垂直最大 80°
         private const float MinHeadPitchDegrees = -15f; // 垂直最小 -15°，更低效果不好
 
-        // head 俯仰校正（度，向下压）：模型 head face-forward 与 AimAxis(+Z) 有 ~45° pitch 偏移，
-        // 致 IK 把 +Z 对到水平 dir 时 head 实际仰 ~45°。从 pitch 减此值补偿（手测定）。
-        private const float HeadPitchCorrectionDegrees = 45f;
+        // head 俯仰校正（弧度，向下压）：补偿第三人称 TppCamera 轨道俯仰角 = atan(1.75/2.25) ≈ 0.661 rad（37.9°）。
+        // 相机架锚点上1.75/后2.25（TppCamera.cs:105-108），玩家"水平看" ⇔ lookAngles.Y≈此值，减之把脸压到屏幕水平。
+        // 非模型偏移（旧注误诊）——第一人称禁用（UpdateHeadIK 判 IsEntityFirstPersonTarget）。
+        private const float HeadPitchCorrection = 0.661f;
 
         /// <summary>
         /// 当前是否在 ClimbUp 相位（攀爬动画进行中）。供 ComponentGltfPlayerAutoJump 抑制重复触发。
@@ -1469,11 +1470,16 @@ namespace Game {
             float minPitch = MathUtils.DegToRad(MinHeadPitchDegrees);
             float yaw = MathUtils.Clamp(
                 lookAngles.X * (InvertHeadYaw ? -1f : 1f), -maxYaw, maxYaw);
-            // pitch 先钳到玩家意图 [MinHeadPitchDegrees, MaxHeadPitchDegrees]（非对称），再减 HeadPitchCorrection
-            // 补偿模型 face-forward 与 AimAxis(+Z) 的 ~45° 偏移（水平视线时 head 实际仰，向下压平）。
+            // correction 补偿第三人称 TppCamera 轨道高差（水平看 ⇔ lookAngles.Y≈+0.661 rad，减之压平）。
+            // 第一人称 camera=眼，水平看 ⇔ lookAngles.Y=0，再减会把脸压成朝下 ~38°（多人同屏另一玩家可见）。
+            // 故第一人称禁用 correction，脸直接跟 gaze。无 GameWidget 兜底走第三人称默认（保现状）。
+            bool firstPerson = m_componentPlayer != null
+                && m_componentPlayer.GameWidget != null
+                && m_componentPlayer.GameWidget.IsEntityFirstPersonTarget(Entity);
+            float correction = firstPerson ? 0f : HeadPitchCorrection;
             float pitch = MathUtils.Clamp(
                 lookAngles.Y * (InvertHeadPitch ? -1f : 1f), minPitch, maxPitch)
-                - MathUtils.DegToRad(HeadPitchCorrectionDegrees);
+                - correction;
 
             // 模型空间视线方向（forward=±Z, up=+Y）
             float cosPitch = MathF.Cos(pitch);
