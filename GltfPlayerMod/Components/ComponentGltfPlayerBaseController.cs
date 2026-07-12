@@ -49,6 +49,7 @@ namespace Game {
         private bool m_prevIsSleeping;
 
         private ComponentCreature m_componentCreature;
+        private ComponentHumanModel m_componentHumanModel;
         private ComponentRider m_componentRider;
         private ComponentSleep m_componentSleep;
         private ComponentFlu m_componentFlu;
@@ -210,6 +211,7 @@ namespace Game {
         public override void Load(ValuesDictionary valuesDictionary, IdToEntityMap idToEntityMap) {
             base.Load(valuesDictionary, idToEntityMap);
             m_componentCreature = Entity.FindComponent<ComponentCreature>(true);
+            m_componentHumanModel = Entity.FindComponent<ComponentHumanModel>(true);
             m_componentRider = Entity.FindComponent<ComponentRider>();
             m_componentSleep = Entity.FindComponent<ComponentSleep>();
             m_componentFlu = Entity.FindComponent<ComponentFlu>();
@@ -424,7 +426,7 @@ namespace Game {
                 ComponentMiner.PendingAction.Attack | ComponentMiner.PendingAction.Place
                 | ComponentMiner.PendingAction.Use | ComponentMiner.PendingAction.Interact
                 | ComponentMiner.PendingAction.Aim;
-            var controller = Entity.FindComponent<ComponentHumanModel>()?.AnimationController;
+            var controller = m_componentHumanModel.AnimationController;
             if (animating) {
                 // 切回第三人称/重回视锥：恢复动画驱动 pending（幂等 Set，与 OnControllerCreated 一致）
                 m_componentMiner.SetRequiresPending(allPending);
@@ -1190,7 +1192,7 @@ namespace Game {
             bool grounded = m_jumpPhase == JumpPhaseGround
                 && p.GetFloat("SpeedAbs") <= 0.2f
                 && p.GetFloat("CrouchFactor") <= 0f
-                && p.GetFloat("LieDownFactor") <= 0f
+                && m_componentHumanModel.m_lieDownFactorModel <= 0f
                 && !p.GetBool("IsInWater")
                 && !p.GetBool("IsRiding")
                 && !p.GetBool("IsDead")
@@ -1203,8 +1205,8 @@ namespace Game {
                 && !p.GetBool("IsShivering")
                 && !p.GetBool("IsTired")
                 && !p.GetBool("IsThrowing")
-                && !p.GetBool("IsPickingUp")
-                && !(p.GetBool("IsDigging") && p.GetBool("IsDiggingPlant"));
+                && !m_pickupActive
+                && !(p.GetBool("IsDigging") && m_digPlantCached);
         }
 
         /// <summary>下次随机待机触发间隔（15-30s 随机）。</summary>
@@ -1451,14 +1453,18 @@ namespace Game {
         /// 钳制 yaw/pitch 到 MaxHeadYaw/Pitch 防脖子转过头。
         /// </remarks>
         void UpdateHeadIK(AnimationController controller) {
-            // 停用条件：死亡/躺下/攀爬时 head 不追踪。ClimbUp 期 head 与 bodyturn 两层皆停（JSON bodyturn condition 已排 ClimbUp），
-            // head 另外排死亡/躺下；攀爬时 head 放松回动画姿态。
-            // 用 LieDownFactor 而非 IsSleeping：起身过渡 IsSleeping 已 false 但 LieDownFactor>0（身体还躺），
-            // 此时 IK 激活会 aim 异常。LieDownFactor 由 ComponentHumanModel.SyncAnimationParameters 写入（先于本参与者）。
-            float lieDown = controller.Parameters.GetFloat("LieDownFactor");
+            // 停用条件：死亡 / 完全躺下(LieDownFactor>=1) / 攀爬 / dig_harvest / pickup / 随机待机舞 时 head 不追踪，放松回 clip 姿态。
+            // LieDownFactor 用 <1（非 ==0）：起身过渡(0<v<1)身体已半起，IK 追踪正常；仅完全躺下(>=1)才停。
+            // dig_harvest/pickup/随机舞 clip 自带强 head 动作，IK weight=1 会覆盖 clip 的 head → 这些 clip 期间关 IK 让 clip head 显现。
+            // 参数由各 Update*State 先于本调用写入（SyncAnimationParameters 内顺序）；LieDownFactor 由 ComponentHumanModel 写入（先于本参与者）。
+            var p = controller.Parameters;
+            float lieDown = m_componentHumanModel.m_lieDownFactorModel;
             bool active = m_componentCreature.ComponentHealth.Health > 0f
-                && lieDown == 0f
-                && m_jumpPhase != JumpPhaseClimbUp;
+                && lieDown < 1f
+                && m_jumpPhase != JumpPhaseClimbUp
+                && !m_pickupActive
+                && !(p.GetBool("IsDigging") && m_digPlantCached)
+                && !m_randomIdleActive;
             if (!active || !m_headIKRegistered) {
                 controller.ClearIKTarget(HeadIKChain);
                 return;
