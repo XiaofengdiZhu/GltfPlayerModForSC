@@ -22,7 +22,8 @@
     "swim": {
       "source": "Swim_Fwd_Loop",
       "loop": true,
-      "blendDuration": 0.5
+      "blendDuration": 0.5,
+      "rootBoneTranslation": [0, -0.5, 0]
     },
     "swim_idle": {
       "source": "Swim_Idle_Loop",
@@ -31,6 +32,11 @@
     },
     "fly": {
       "source": "Levitate Idle",
+      "loop": true,
+      "blendDuration": 0.3
+    },
+    "fly_idle": {
+      "source": "Levitate Entrance",
       "loop": true,
       "blendDuration": 0.3
     },
@@ -265,7 +271,7 @@
       "layer": "Base",
       "rules": [
         {
-          "condition": "[IsDead] == true",
+          "condition": "[IsDead]",
           "animation": "death"
         },
         {
@@ -281,7 +287,7 @@
           "animation": "idle"
         },
         {
-          "condition": "[IsWakingUp] == true",
+          "condition": "[IsWakingUp]",
           "animation": "wakeup"
         },
         {
@@ -309,7 +315,16 @@
           "rules":[
             {
               "condition": "[IsFlying]",
-              "animation": "fly"
+              "rules": [
+                {
+                  "condition": "[SpeedAbs] > 0.2",
+                  "animation": "fly"
+                },
+                {
+                  "condition": "true",
+                  "animation": "fly_idle"
+                }
+              ]
             },
             {
               "condition": "[IsOnLadder] > 0.0",
@@ -339,7 +354,7 @@
               }
             },
             {
-              "condition": "[IsTired] == true",
+              "condition": "[IsTired]",
               "animation": "crouch_tired"
             },
             {
@@ -362,22 +377,22 @@
             "speed": "[MoveSpeed] * 0.8"
           }
         },
-        { "condition": "[IsThrowing] == true", "animation": "throw_overhand" },
-        { "condition": "[IsDigging] == true && [IsDiggingPlant] == true", "animation": "dig_harvest" },
+        { "condition": "[IsThrowing]", "animation": "throw_overhand" },
+        { "condition": "[IsDigging] && [IsDiggingPlant]", "animation": "dig_harvest" },
         {
-          "condition": "[IsPickingUp] == true",
+          "condition": "[IsPickingUp]",
           "animation": "pickup"
         },
         {
-          "condition": "[IsHoldingMeleeWeapon] == true",
+          "condition": "[IsHoldingMeleeWeapon]",
           "animation": "melee_idle"
         },
         {
-          "condition": "[IsShivering] == true",
+          "condition": "[IsShivering]",
           "animation": "shivering"
         },
         {
-          "condition": "[IsTired] == true",
+          "condition": "[IsTired]",
           "animation": "idle_tired"
         },
         {
@@ -389,22 +404,22 @@
     "activity": {
       "layer": "Activity",
       "rules": [
-        { "condition": "[IsFiring] == true", "animation": "shoot_pistol" },
-        { "condition": "[IsInteracting] == true && [IsInteractChest] == true", "animation": "interact_chest" },
-        { "condition": "[IsInteracting] == true", "animation": "interact_general" },
-        { "condition": "[IsPlacing] == true && [IsPlacingPlant] == true", "animation": "place_water" },
-        { "condition": "[IsPlacing] == true", "animation": "place_chop" },
-        { "condition": "[IsUsing] == true", "animation": "use_chop" },
-        { "condition": "[IsDigging] == true && [IsDiggingPlant] == true", "animation": null },
-        { "condition": "[IsDigging] == true", "animation": "dig_chop" },
-        { "condition": "[IsAiming] == true", "animation": "aim_pistol" },
-        { "condition": "[IsThrowingUpperBody] == true", "animation": "throw_overhand" },
+        { "condition": "[IsFiring]", "animation": "shoot_pistol" },
+        { "condition": "[IsInteracting] && [IsInteractChest]", "animation": "interact_chest" },
+        { "condition": "[IsInteracting]", "animation": "interact_general" },
+        { "condition": "[IsPlacing] && [IsPlacingPlant]", "animation": "place_water" },
+        { "condition": "[IsPlacing]", "animation": "place_chop" },
+        { "condition": "[IsUsing]", "animation": "use_chop" },
+        { "condition": "[IsDigging] && [IsDiggingPlant]", "animation": null },
+        { "condition": "[IsDigging]", "animation": "dig_chop" },
+        { "condition": "[IsAiming]", "animation": "aim_pistol" },
+        { "condition": "[IsThrowingUpperBody]", "animation": "throw_overhand" },
         {
-          "condition": "[IsAttacking] == true && [AttackComboParity] == 0",
+          "condition": "[IsAttacking] && [AttackComboParity] == 0",
           "animation": "attack_cross"
         },
         {
-          "condition": "[IsAttacking] == true && [AttackComboParity] == 1",
+          "condition": "[IsAttacking] && [AttackComboParity] == 1",
           "animation": "attack_jab"
         },
         {
@@ -434,7 +449,7 @@
       "layer": "UpperBody",
       "rules": [
         {
-          "condition": "[IsAttacked] == true",
+          "condition": "[IsAttacked]",
           "animation": "attacked"
         },
         {
