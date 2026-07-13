@@ -50,10 +50,13 @@ namespace Game {
 
         private ComponentCreature m_componentCreature;
         private ComponentHumanModel m_componentHumanModel;
+        private ComponentBody m_componentBody;
+        private ComponentLocomotion m_componentLocomotion;
         private ComponentRider m_componentRider;
         private ComponentSleep m_componentSleep;
         private ComponentFlu m_componentFlu;
         private ComponentVitalStats m_componentVitalStats;
+        private ComponentHealth m_componentHealth;
 
         // glTF 玩家自动跳跃（可空：仅 Player 实体挂载）；触发越障时消费其攀爬标志进入 ClimbUp 相位
         private ComponentGltfPlayerAutoJump m_componentAutoJump;
@@ -162,6 +165,17 @@ namespace Game {
         private bool m_placeJustCompleted;     // PlaceLoopComplete → 下帧强制 IsPlacing=false 停
         private bool m_useJustCompleted;
 
+        // ===== 动作/状态参数镜像（每帧由各 Update*State 在 SetBool 处同步赋值，供同帧后续逻辑直接读字段，省 Parameters.GetBool 字典查找）=====
+        // IsThrowing/IsThrowingUpperBody 不设镜像：直接用现有锁 (m_throwActive||m_throwRequest) / (m_throwUpperActive||m_throwUpperRequest)（已证等价）。
+        private bool m_isHoldingMeleeWeapon;   // UpdateMeleeWeaponState
+        private bool m_isShivering;             // UpdateVitalState
+        private bool m_isTired;                  // UpdateVitalState
+        private bool m_isDigging;                // UpdateDigState
+        private bool m_isPlacing;                // UpdatePlaceState
+        private bool m_isUsing;                  // UpdateUseState
+        private bool m_isInteracting;            // UpdateInteractState
+        private bool m_isFiring;                 // UpdateFireState
+
         // Interact：pending 延迟到 InteractImpact 事件才 ExecuteInteract；m_interactActive 防 pending 期每帧重分类。
         private bool m_interactActive;
         private bool m_interactChest;          // pending 目标分类（用公开 InteractPendingValue 取按下时存的目标）
@@ -239,10 +253,13 @@ namespace Game {
             base.Load(valuesDictionary, idToEntityMap);
             m_componentCreature = Entity.FindComponent<ComponentCreature>(true);
             m_componentHumanModel = Entity.FindComponent<ComponentHumanModel>(true);
+            m_componentBody = Entity.FindComponent<ComponentBody>(true);
+            m_componentLocomotion = Entity.FindComponent<ComponentLocomotion>(true);
             m_componentRider = Entity.FindComponent<ComponentRider>();
             m_componentSleep = Entity.FindComponent<ComponentSleep>();
             m_componentFlu = Entity.FindComponent<ComponentFlu>();
             m_componentVitalStats = Entity.FindComponent<ComponentVitalStats>();
+            m_componentHealth = Entity.FindComponent<ComponentHealth>();
             m_componentAutoJump = Entity.FindComponent<ComponentGltfPlayerAutoJump>();
             m_componentMiner = Entity.FindComponent<ComponentMiner>();
             m_componentPickableGatherer = Entity.FindComponent<ComponentPickableGatherer>();
@@ -252,14 +269,9 @@ namespace Game {
             m_subsystemProjectiles = Project.FindSubsystem<SubsystemProjectiles>();
 
             // 订阅受击事件：ComponentBody.Attacked 仅在攻击命中时触发（Attackment.cs:227），环境伤害不触发。
-            var componentBody = m_componentCreature.ComponentBody;
-            if (componentBody != null) {
-                componentBody.Attacked += delegate { m_attackedPending = true; };
-            }
+            m_componentBody?.Attacked += _ => m_attackedPending = true;
             // 订阅抛射物生成：仅运行时发射触发（世界加载不触发），按 OwnerEntity==本实体过滤本玩家发射/投掷。
-            if (m_subsystemProjectiles != null) {
-                m_subsystemProjectiles.ProjectileAdded += OnProjectileAdded;
-            }
+            m_subsystemProjectiles?.ProjectileAdded += OnProjectileAdded;
         }
 
         /// <summary>
@@ -271,9 +283,9 @@ namespace Game {
             }
             // 仅弓/弩/火枪走 ProjectileAdded 触发 fire（松手即抛）。投掷物走 Aim pending（throw_general 播 25% 才抛），
             // 25% 后 FireProjectile 也触发本事件——此处忽略投掷物防重触 throw（pending 路径不依赖此事件）。
-            int blockValue = m_componentMiner != null ? m_componentMiner.ActiveBlockValue : 0;
+            int blockValue = m_componentMiner?.ActiveBlockValue ?? 0;
             Block block = blockValue != 0 ? BlocksManager.Blocks[Terrain.ExtractContents(blockValue)] : null;
-            if (block is BowBlock || block is CrossbowBlock || block is MusketBlock) {
+            if (block is BowBlock or CrossbowBlock or MusketBlock) {
                 m_projectileFirePending = true;
             }
         }
@@ -307,6 +319,7 @@ namespace Game {
             // IsPickingUp/IsAttacked/IsAiming/RandomIdleEvent 等）由下方 ResetActionLatches 统一清，不重复设。
             controller.Parameters.SetString("JumpPhase", m_jumpPhase);
             controller.Parameters.SetBool("IsWakingUp", m_isWakingUp);
+            m_isShivering = false; m_isTired = false; m_isHoldingMeleeWeapon = false;
             controller.Parameters.SetBool("IsShivering", false);
             controller.Parameters.SetBool("IsTired", false);
             controller.Parameters.SetBool("IsHoldingMeleeWeapon", false);
@@ -385,6 +398,7 @@ namespace Game {
             // 清动作参数（Sync 不跑期间残留 → 切回第三人称首帧规则误匹配播残留 clip）。
             // controller 可空（model 偶未就绪）：null 时仅清 latch，跳过参数清。
             if (controller != null) {
+                m_isDigging = false; m_isPlacing = false; m_isUsing = false; m_isInteracting = false; m_isFiring = false;
                 controller.Parameters.SetBool("IsDigging", false);
                 controller.Parameters.SetBool("IsDiggingPlant", false);
                 controller.Parameters.SetBool("IsPlacing", false);
@@ -534,7 +548,7 @@ namespace Game {
             controller.Parameters.SetFloat("MoveSpeed", sign * xzLen);
             // 瞬时 WalkOrder（LastWalkOrder）→ WalkOrderX/Y，供 GltfBodyTurnDriver 自算带符号转向角
             // （Vector2.Angle(UnitY, WalkOrder)，纯后退归零/斜后转向）。不用平滑 HeadingOffset：后者爬升致后退"先转后瞬间转正"。
-            var lastWalk = m_componentCreature.ComponentLocomotion.LastWalkOrder;
+            var lastWalk = m_componentLocomotion.LastWalkOrder;
             controller.Parameters.SetFloat("WalkOrderX", lastWalk?.X ?? 0f);
             controller.Parameters.SetFloat("WalkOrderY", lastWalk?.Y ?? 0f);
         }
@@ -558,18 +572,15 @@ namespace Game {
         /// ClimbUp 期间 body 物理副作用（禁重力/碰撞/输入移动）由 API ApplyRootMotionPhysics 据 JSON physics 块自动应用。
         /// </remarks>
         void UpdateJumpPhase(AnimationController controller) {
-            var componentBody = m_componentCreature.ComponentBody;
-            var componentLocomotion = m_componentCreature.ComponentLocomotion;
-
-            bool onGround = componentBody.StandingOnValue.HasValue;
-            float velocityY = componentBody.Velocity.Y;
+            bool onGround = m_componentBody.StandingOnValue.HasValue;
+            float velocityY = m_componentBody.Velocity.Y;
 
             // 非陆地跳跃状态接管时重置相位，避免出水/出飞行落地误播 Land
-            bool overridden = componentBody.ImmersionFactor > 0
-                || componentLocomotion.m_flying
-                || componentLocomotion.LadderValue.HasValue
+            bool overridden = m_componentBody.ImmersionFactor > 0
+                || m_componentLocomotion.m_flying
+                || m_componentLocomotion.LadderValue.HasValue
                 || m_componentRider?.Mount != null
-                || m_componentCreature.ComponentHealth.Health <= 0;
+                || m_componentHealth.Health <= 0;
 
             // AutoJump 越障标志（每帧消费清除，避免残留误触发后续离地）；climbDir=世界水平爬向
             Vector3 climbDir = default;
@@ -586,12 +597,12 @@ namespace Game {
                 // （TranslationApplier 用 body.Rotation 重定向根运动 localVel→world）。
                 // 纯前向（Dot≈1）不转，保持原前爬行为；爬完留向（不恢复，玩家鼠标自转）。
                 // 时序：本 Sync 在 controller.Update 前、ComponentModel 根运动前 → 当帧根运动即见新 yaw。
-                Vector3 fwdF = new Vector3(componentBody.Matrix.Forward.X, 0f, componentBody.Matrix.Forward.Z);
+                Vector3 fwdF = new Vector3(m_componentBody.Matrix.Forward.X, 0f, m_componentBody.Matrix.Forward.Z);
                 if (fwdF.LengthSquared() > 1e-6f && Vector3.Dot(climbDir, Vector3.Normalize(fwdF)) < 0.999f) {
                     // 本引擎 body forward=-Z 绕 +Y：forward=(-sin yaw, 0, -cos yaw)。
                     // 要 forward 对齐 climbDir → yaw=atan2(-climbDir.X, -climbDir.Z)（直接反解，无符号歧义）。
                     float targetYaw = MathF.Atan2(-climbDir.X, -climbDir.Z);
-                    componentBody.Rotation = Quaternion.CreateFromAxisAngle(Vector3.UnitY, targetYaw);
+                    m_componentBody.Rotation = Quaternion.CreateFromAxisAngle(Vector3.UnitY, targetYaw);
                 }
             }
             else if (m_jumpPhase == JumpPhaseClimbUp) {
@@ -601,7 +612,7 @@ namespace Game {
             else if (onGround) {
                 // 刚落地：净下落高度（起跳/下落时 Y - 当前 Y）超过 JumpLandMinDropHeight 才播 Land
                 if (!m_prevOnGround) {
-                    float dropped = m_takeoffY - componentBody.Position.Y;
+                    float dropped = m_takeoffY - m_componentBody.Position.Y;
                     m_jumpPhase = (dropped > JumpLandMinDropHeight) ? JumpPhaseLand : JumpPhaseGround;
                 }
             }
@@ -609,7 +620,7 @@ namespace Game {
                 // 刚离地：上升=主动起跳→Start；下降=掉落→Loop
                 // 持续空中时 Start→Loop 由 Jump_Start 完成事件推进，此处不动
                 if (m_prevOnGround) {
-                    m_takeoffY = componentBody.Position.Y;
+                    m_takeoffY = m_componentBody.Position.Y;
                     m_jumpPhase = (velocityY > JumpStartVelocityThreshold) ? JumpPhaseStart : JumpPhaseLoop;
                 }
             }
@@ -638,7 +649,7 @@ namespace Game {
             else if (m_prevIsSleeping) {
                 m_isWakingUp = true;
             }
-            if (m_componentCreature.ComponentHealth.Health <= 0f) {
+            if (m_componentHealth.Health <= 0f) {
                 m_isWakingUp = false;
             }
             m_prevIsSleeping = sleeping;
@@ -659,6 +670,7 @@ namespace Game {
                 || (m_componentVitalStats != null && m_componentVitalStats.Temperature < 6f);
             bool isTired = m_componentVitalStats != null
                 && (m_componentVitalStats.Stamina < 0.33f || m_componentVitalStats.Sleep < 0.2f);
+            m_isShivering = isShivering; m_isTired = isTired;
             controller.Parameters.SetBool("IsShivering", isShivering);
             controller.Parameters.SetBool("IsTired", isTired);
         }
@@ -682,6 +694,7 @@ namespace Game {
                     holdingMeleeWeapon = block is WoodenClubBlock or StoneClubBlock or SpearBlock or MacheteBlock;
                 }
             }
+            m_isHoldingMeleeWeapon = holdingMeleeWeapon;
             controller.Parameters.SetBool("IsHoldingMeleeWeapon", holdingMeleeWeapon);
             controller.Parameters.SetBool("IsHandsEmpty", handsEmpty);
         }
@@ -837,7 +850,7 @@ namespace Game {
             // 剑连击仅武器(4类:棍/矛/砍刀) + 非飞 + 非蹲 + 非水 时启用；否则走 UpdatePunchAttack
             // （空手→punch / 一般物品 或 剑+脏态(飞/蹲/水)→chop_attack TreeChopping_Loop 上半身）。
             // 不查 IsOnGround：剑 a/c 前冲向上 Y 分量令本体瞬时 airborne，查 IsOnGround 会自杀中断连击。
-            bool swordEligible = controller.Parameters.GetBool("IsHoldingMeleeWeapon")
+            bool swordEligible = m_isHoldingMeleeWeapon
                 && CanSwordCombo(controller);
             if (swordEligible != m_lastSwordEligible) {
                 // 分支切换（换手 或 状态变脏/净）：重置两分支锁存 + 清 pending（旧分支 pending/锁存不再有效）
@@ -1058,11 +1071,10 @@ namespace Game {
         /// MeleeImpact 不触发→pending 不清→IsSwordCombo 残留→Activity [IsSwordCombo]→null 静默上半身）。
         /// 不满足时 UpdateAttackState 改走 UpdatePunchAttack（Activity 上半身 chop_attack TreeChopping_Loop）。</summary>
         bool CanSwordCombo(AnimationController controller) {
-            var p = controller.Parameters;
-            return !p.GetBool("IsFlying")
-                && p.GetFloat("CrouchFactor") <= 0f
-                && !p.GetBool("IsInWater")
-                && !p.GetBool("IsRiding");
+            return !m_componentLocomotion.m_flying
+                && m_componentCreature.ComponentBody.CrouchFactor <= 0f
+                && m_componentBody.ImmersionFactor <= 0
+                && m_componentRider?.Mount == null;
         }
 
         /// <summary>Base 层当前是否播任一剑击 source（A/B/C）。自愈判定用。</summary>
@@ -1087,6 +1099,7 @@ namespace Game {
             if (m_digJustCompleted) {
                 m_digJustCompleted = false;
                 m_digActive = false;
+                m_isDigging = false;
                 controller.Parameters.SetBool("IsDigging", false);
                 if (m_componentMiner == null || m_componentMiner.PokingPhase <= 0f) {
                     m_digPlantCached = false;
@@ -1102,12 +1115,12 @@ namespace Game {
             // aimPending：投掷物 Aim pending 期（throw_general 尚未开播的首帧）也压制，防 OnAim Completed 的 Poke(false) 残留 PokingPhase 触发 dig_general。
             bool aimPending = m_componentMiner != null && m_componentMiner.IsPending(ComponentMiner.PendingAction.Aim);
             bool digSuppressed = aimPending
-                              || controller.Parameters.GetBool("IsPlacing")
-                              || controller.Parameters.GetBool("IsUsing")
-                              || controller.Parameters.GetBool("IsInteracting")
-                              || controller.Parameters.GetBool("IsFiring")
-                              || controller.Parameters.GetBool("IsThrowing")
-                              || controller.Parameters.GetBool("IsThrowingUpperBody");
+                              || m_isPlacing
+                              || m_isUsing
+                              || m_isInteracting
+                              || m_isFiring
+                              || (m_throwActive || m_throwRequest)
+                              || (m_throwUpperActive || m_throwUpperRequest);
             if (digSuppressed) {
                 m_digActive = false;
             }
@@ -1126,6 +1139,7 @@ namespace Game {
 
             // IsDigging：未被 place/use/interact 压制时，挖中（PokingPhase>0）或播放锁中（停挖后 anim 播完前保持）
             bool isDigging = !digSuppressed && (digging || m_digActive);
+            m_isDigging = isDigging;
             controller.Parameters.SetBool("IsDigging", isDigging);
             controller.Parameters.SetBool("IsDiggingPlant", m_digPlantCached);
         }
@@ -1138,6 +1152,7 @@ namespace Game {
         void UpdatePlaceState(AnimationController controller) {
             if (m_placeJustCompleted) {
                 m_placeJustCompleted = false;
+                m_isPlacing = false;
                 controller.Parameters.SetBool("IsPlacing", false);
                 return;
             }
@@ -1148,8 +1163,9 @@ namespace Game {
                 bool placed = m_componentMiner.ExecutePlace(ComponentMiner.TargetMode.Reraycast);
                 if (placed) {
                     Block block = blockValue != 0 ? BlocksManager.Blocks[Terrain.ExtractContents(blockValue)] : null;
-                    m_placingPlant = block is SaplingBlock || block is SeedsBlock;
+                    m_placingPlant = block is SaplingBlock or SeedsBlock;
                     controller.Parameters.SetBool("IsPlacingPlant", m_placingPlant);
+                    m_isPlacing = true;
                     controller.Parameters.SetBool("IsPlacing", true);
                 }
             }
@@ -1162,6 +1178,7 @@ namespace Game {
         void UpdateUseState(AnimationController controller) {
             if (m_useJustCompleted) {
                 m_useJustCompleted = false;
+                m_isUsing = false;
                 controller.Parameters.SetBool("IsUsing", false);
                 return;
             }
@@ -1170,6 +1187,7 @@ namespace Game {
                 // ExecuteUse(Reraycast) 失败（等级不足/DoUse 失败，pending 已清，下帧不重入）→ 不播 use anim。
                 bool used = m_componentMiner.ExecuteUse(ComponentMiner.TargetMode.Reraycast);
                 if (used) {
+                    m_isUsing = true;
                     controller.Parameters.SetBool("IsUsing", true);
                 }
             }
@@ -1185,6 +1203,7 @@ namespace Game {
                 && m_componentMiner.IsPending(ComponentMiner.PendingAction.Interact);
             if (m_interactJustCompleted) {
                 m_interactJustCompleted = false;
+                m_isInteracting = false;
                 controller.Parameters.SetBool("IsInteracting", false);
                 return;
             }
@@ -1192,6 +1211,7 @@ namespace Game {
                 && !m_interactActive) {
                 m_interactChest = ClassifyInteractChest();
                 controller.Parameters.SetBool("IsInteractChest", m_interactChest);
+                m_isInteracting = true;
                 controller.Parameters.SetBool("IsInteracting", true);
                 m_interactActive = true;
             }
@@ -1207,7 +1227,7 @@ namespace Game {
                 int blockValue = m_componentMiner.ActiveBlockValue;
                 if (blockValue != 0) {
                     Block block = BlocksManager.Blocks[Terrain.ExtractContents(blockValue)];
-                    aiming = block is BowBlock || block is CrossbowBlock || block is MusketBlock;
+                    aiming = block is BowBlock or CrossbowBlock or MusketBlock;
                 }
             }
             controller.Parameters.SetBool("IsAiming", aiming);
@@ -1220,12 +1240,14 @@ namespace Game {
         void UpdateFireState(AnimationController controller) {
             if (m_fireJustCompleted) {
                 m_fireJustCompleted = false;
+                m_isFiring = false;
                 controller.Parameters.SetBool("IsFiring", false);
                 return;
             }
             // 仅弓/弩/火枪（OnProjectileAdded 已过滤）。投掷物不走此（Aim pending 驱动 throw_general，见 UpdateThrowState）。
             if (m_projectileFirePending) {
                 m_projectileFirePending = false;
+                m_isFiring = true;
                 controller.Parameters.SetBool("IsFiring", true);
             }
         }
@@ -1412,25 +1434,24 @@ namespace Game {
         /// 维护：Base 层规则演变（加新优先于 idle/throw 的状态）时须同步基础 9 条。
         /// </summary>
         bool IsGroundedIdle(AnimationController controller, bool excludeIdleVariants) {
-            var p = controller.Parameters;
             bool grounded = m_jumpPhase == JumpPhaseGround
-                && p.GetFloat("SpeedAbs") <= 0.2f
-                && p.GetFloat("CrouchFactor") <= 0f
+                && m_componentBody.Velocity.LengthSquared() <= 0.04f
+                && m_componentCreature.ComponentBody.CrouchFactor <= 0f
                 && m_componentHumanModel.m_lieDownFactorModel <= 0f
-                && !p.GetBool("IsInWater")
-                && !p.GetBool("IsRiding")
-                && !p.GetBool("IsDead")
-                && !p.GetBool("IsFlying")
-                && !p.GetBool("IsWakingUp");
+                && m_componentBody.ImmersionFactor <= 0
+                && m_componentRider?.Mount == null
+                && m_componentHealth.Health > 0
+                && !m_componentLocomotion.m_flying
+                && !m_isWakingUp;
             if (!grounded || !excludeIdleVariants) {
                 return grounded;
             }
-            return !p.GetBool("IsHoldingMeleeWeapon")
-                && !p.GetBool("IsShivering")
-                && !p.GetBool("IsTired")
-                && !p.GetBool("IsThrowing")
+            return !m_isHoldingMeleeWeapon
+                && !m_isShivering
+                && !m_isTired
+                && !(m_throwActive || m_throwRequest)
                 && !m_pickupActive
-                && !(p.GetBool("IsDigging") && m_digPlantCached);
+                && !(m_isDigging && m_digPlantCached);
         }
 
         /// <summary>下次随机待机触发间隔（15-30s 随机）。</summary>
@@ -1473,7 +1494,7 @@ namespace Game {
             // 3. 离开 groundedIdle（移动/飞/蹲/水/骑/武器/发抖/疲劳/throw/dig/pickup 打断等）→ 清 param + 重置计时。
             //    interval 一并重置（重新随机）：下次回 idle 须重新累计满 15-30s 才触发。含分支② fall-through 场景。
             if (!IsGroundedIdle(controller, true)) {
-                if (m_randomIdleActive || controller.Parameters.GetString("RandomIdleEvent") != string.Empty) {
+                if (m_randomIdleActive) {
                     controller.Parameters.SetString("RandomIdleEvent", string.Empty);
                 }
                 m_randomIdleActive = false;
@@ -1567,7 +1588,7 @@ namespace Game {
                     m_componentMiner?.ExecuteHit(mode);
                     // 武器剑击：impact 点开启排队窗口（UpdateSwordAttack 步骤 3 据此接受窗口内 press 排队进下段）。
                     // 空手/物品走 punch 状态机，不读此标志。
-                    if (controller.Parameters.GetBool("IsHoldingMeleeWeapon")) {
+                    if (m_isHoldingMeleeWeapon) {
                         m_swordImpactReached = true;
                     }
                     break;
@@ -1693,12 +1714,11 @@ namespace Game {
             // dig_harvest/pickup/随机舞/剑击 clip 自带强 head 动作，IK weight=1 会覆盖 clip 的 head → 这些 clip 期间关 IK 让 clip head 显现。
             // 参数由各 Update*State 先于本调用写入（SyncAnimationParameters 内顺序）；LieDownFactor 由 ComponentHumanModel 写入（先于本参与者）。
             // m_swordAttackState 由 UpdateAttackState（L416，先于本调用）写入，Playing 态读当帧值。
-            var p = controller.Parameters;
-            bool active = m_componentCreature.ComponentHealth.Health > 0f
+            bool active = m_componentHealth.Health > 0f
                 && m_componentHumanModel.m_lieDownFactorModel < 1f
                 && m_jumpPhase != JumpPhaseClimbUp
                 && !m_pickupActive
-                && !(p.GetBool("IsDigging") && m_digPlantCached)
+                && !(m_isDigging && m_digPlantCached)
                 && !m_randomIdleActive
                 && m_swordAttackState != SwordAttackState.Playing;
             if (!active || !m_headIKRegistered) {
@@ -1706,7 +1726,7 @@ namespace Game {
                 return;
             }
 
-            var lookAngles = m_componentCreature.ComponentLocomotion.LookAngles;
+            var lookAngles = m_componentLocomotion.LookAngles;
             float maxYaw = MathUtils.DegToRad(MaxHeadYawDegrees);
             float maxPitch = MathUtils.DegToRad(MaxHeadPitchDegrees);
             float minPitch = MathUtils.DegToRad(MinHeadPitchDegrees);
