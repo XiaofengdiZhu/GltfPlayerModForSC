@@ -121,6 +121,33 @@ namespace Game {
 
         private AttackComboMode m_attackComboMode = AttackComboMode.Complete;
 
+        // ===== 武器剑击三段连击（Base 层全身，独立于上方空手 punch 状态机）=====
+        // sword source 名（须与 GltfPlayer.json sword_a/b/c 别名 source 一致；换动画须同步改）
+        private const string SwordASource = "Sword_Regular_A";
+        private const string SwordBSource = "Sword_Regular_B";
+        private const string SwordCSource = "Sword_Regular_C";
+        // grace 期长度（秒）：A/B 段结束后保留末态等再次 press 进下一段，过期则交还 idle。Time 无 GameTime，用 countdown。
+        private const float SwordGraceDuration = 0.12f;
+
+        // 剑击状态机：Idle（无攻击）→ Playing（某段 clip 播放中）→ Grace（A/B 完后 0.12s 等待）→ Idle。
+        // C（末段）无 Grace：播完即 Idle（或 queuedRestart → 回 A 循环）。
+        private enum SwordAttackState { Idle, Playing, Grace }
+        private SwordAttackState m_swordAttackState = SwordAttackState.Idle;
+
+        private int   m_swordStage;            // 0=A 1=B 2=C（与 AttackComboStage param 对应）
+        private bool  m_swordImpactReached;    // 当前段已过 impact 点（开启排队窗口）
+        private bool  m_swordQueuedNext;       // A/B 窗口内 press 排队：当前段结束后进下一段
+        private bool  m_swordQueuedRestart;    // C 窗口内 press 排队：C 结束后回 A
+        private bool  m_swordJustCompleted;    // SwordAttackComplete latch（下帧 UpdateSwordAttack 消费，独立于 punch 的 m_attackJustCompleted）
+        private float m_swordGraceTimer;       // grace 剩余秒（每帧 -= Time.FrameDuration）
+
+        // 上一帧攻击分支是否武器（分支切换时重置离开分支的锁存，防中途换手残留驱动虚假攻击）
+        private bool m_lastSwordEligible;
+
+        // HitInterval 缓存：持武器 + Animate 跑时把 m_basicHitInterval 压到 0.3（连击冷却），停/换手还原缓存原值。
+        private bool   m_hitIntervalCached;
+        private double m_cachedBasicHitInterval;
+
         // ===== 全动作 Activity 动画（Dig/Place/Use/Interact/Aim/fire/throw）=====
         // 引用（可空：服装 model 无 miner/player）
         private ComponentPlayer m_componentPlayer;
@@ -345,6 +372,10 @@ namespace Game {
             m_attackComboMode = AttackComboMode.Complete;
             m_attackActive = false;
             m_attackJustCompleted = false;
+            // 剑击状态机重置（同 punch）：Animate 停跑/换模型时中断进行中的剑击序列，防残留驱动虚假循环。
+            ResetSwordLatches();
+            m_lastSwordEligible = false;
+            // HitInterval 不在此重置——UpdateHitInterval 单一管理（Animate 停时下帧自动还原缓存值）。
             m_pickupActive = false;
             m_pickupJustCompleted = false;
             m_attackedActive = false;
@@ -362,6 +393,7 @@ namespace Game {
                 controller.Parameters.SetBool("IsInteracting", false);
                 controller.Parameters.SetBool("IsInteractChest", false);
                 controller.Parameters.SetBool("IsAttacking", false);
+                controller.Parameters.SetBool("IsSwordCombo", false);
                 controller.Parameters.SetBool("IsPickingUp", false);
                 controller.Parameters.SetBool("IsAttacked", false);
                 controller.Parameters.SetBool("IsAiming", false);
@@ -420,6 +452,9 @@ namespace Game {
         public void Update(float dt) {
             if (m_componentMiner == null) return;
             bool animating = Time.FrameIndex - m_lastSyncedFrame <= 1;
+            // HitInterval（每帧）：持武器 + Animate 跑 → 压 m_basicHitInterval=0.3（连击冷却）；停/换手 → 还原缓存原值。
+            // 须每帧判（weapon/animating 任一变化都要调），故在下方 animate 状态变化早退之前。
+            UpdateHitInterval(animating);
             if (animating == m_wasAnimating) return;   // 状态未变：稳定期间幂等 no-op
             m_wasAnimating = animating;
             const ComponentMiner.PendingAction allPending =
@@ -438,6 +473,33 @@ namespace Game {
                 m_componentMiner.ClearRequiresPending(allPending);
                 m_componentMiner.ClearAllIsPending();
                 ResetActionLatches(controller);
+            }
+        }
+
+        /// <summary>
+        /// HitInterval 调控（每帧 Update 调）：持武器 + Animate 跑时把 miner.m_basicHitInterval 压到 0.3（剑击连击冷却），
+        /// 否则还原缓存原值。懒缓存（首次改前读当前值），还原写回缓存值（可能是 0.66 或被其他系统改过的值，非硬编码）。
+        /// </summary>
+        /// <remarks>
+        /// Animate-running 门控（与 pending fallback 同判据 FrameIndex 差≤1）：非第一人称/有相机见 → 动画跑 → 持武器享 0.3；
+        /// Animate 停（第一人称/出视锥）→ 还原缓存（原版即时伤害体验，第一人称攻击无连击动画）。
+        /// 设在 Update（Input 序，早于 ComponentPlayer.Update=Default）→ 本帧 miner.Hit 读到的是已更新的 HitInterval。
+        /// </remarks>
+        void UpdateHitInterval(bool animating) {
+            int bv = m_componentMiner.ActiveBlockValue;
+            bool weapon = bv != 0
+                && BlocksManager.Blocks[Terrain.ExtractContents(bv)]
+                    is WoodenClubBlock or StoneClubBlock or SpearBlock or MacheteBlock;
+            if (weapon && animating) {
+                if (!m_hitIntervalCached) {
+                    m_cachedBasicHitInterval = m_componentMiner.m_basicHitInterval;
+                    m_hitIntervalCached = true;
+                }
+                m_componentMiner.m_basicHitInterval = 0.3;
+            }
+            else if (m_hitIntervalCached) {
+                m_componentMiner.m_basicHitInterval = m_cachedBasicHitInterval;
+                m_hitIntervalCached = false;
             }
         }
 
@@ -611,14 +673,17 @@ namespace Game {
         /// </remarks>
         void UpdateMeleeWeaponState(AnimationController controller) {
             bool holdingMeleeWeapon = false;
+            bool handsEmpty = true;  // 默认空手（ActiveBlockValue==0）
             if (m_componentMiner != null) {
                 int blockValue = m_componentMiner.ActiveBlockValue;
                 if (blockValue != 0) {
+                    handsEmpty = false;  // 持任意方块 = 非空手
                     Block block = BlocksManager.Blocks[Terrain.ExtractContents(blockValue)];
                     holdingMeleeWeapon = block is WoodenClubBlock or StoneClubBlock or SpearBlock or MacheteBlock;
                 }
             }
             controller.Parameters.SetBool("IsHoldingMeleeWeapon", holdingMeleeWeapon);
+            controller.Parameters.SetBool("IsHandsEmpty", handsEmpty);
         }
 
         /// <summary>
@@ -762,8 +827,41 @@ namespace Game {
         }
 
         /// <summary>
-        /// 攻击动作（动画驱动，Activity 层）：读 miner.IsPending(Attack) → IsAttacking 触发 punch_right/punch_left 交替。
-        /// Activity 层 attack 别名 events 灌 MeleeImpact@0.3；MeleeImpact 事件（HandleAnimationEvent）调 miner.ExecuteHit。
+        /// 攻击动作（动画驱动）：按 swordEligible(武器+非飞+非蹲+非水) 二分支派发。读 miner.IsPending(Attack) → IsAttacking 触发对应层动画：
+        /// - swordEligible（持棍/矛/砍刀 且 非飞/非蹲/非水）→ UpdateSwordAttack（Base 层全身 Sword_Regular_A→B→C 三段连击）。
+        /// - 否则 → UpdatePunchAttack（Activity 上半身）：空手→punch_right/punch_left parity 交替；
+        ///   一般物品 或 持武器但飞/蹲/水 → chop_attack（TreeChopping_Loop；JSON 按 IsHandsEmpty 路由）。
+        /// swordEligible 翻转（换手 或 状态变脏/净）时重置两分支锁存 + 清 miner Attack pending（防入口排他锁卡死），防残留驱动虚假攻击。
+        /// </summary>
+        void UpdateAttackState(AnimationController controller) {
+            // 剑连击仅武器(4类:棍/矛/砍刀) + 非飞 + 非蹲 + 非水 时启用；否则走 UpdatePunchAttack
+            // （空手→punch / 一般物品 或 剑+脏态(飞/蹲/水)→chop_attack TreeChopping_Loop 上半身）。
+            // 不查 IsOnGround：剑 a/c 前冲向上 Y 分量令本体瞬时 airborne，查 IsOnGround 会自杀中断连击。
+            bool swordEligible = controller.Parameters.GetBool("IsHoldingMeleeWeapon")
+                && CanSwordCombo(controller);
+            if (swordEligible != m_lastSwordEligible) {
+                // 分支切换（换手 或 状态变脏/净）：重置两分支锁存 + 清 pending（旧分支 pending/锁存不再有效）
+                m_lastSwordEligible = swordEligible;
+                m_componentMiner?.ClearIsPending(ComponentMiner.PendingAction.Attack);
+                m_attackState = AttackState.Idle;
+                m_attackComboMode = AttackComboMode.Complete;  // 防御：清 punch 分支 combo 模式（防未来 sword clip 用 impact 模式跨 flip 残留）
+                m_attackActive = false;
+                m_attackJustCompleted = false;
+                ResetSwordLatches();
+            }
+
+            if (swordEligible) {
+                UpdateSwordAttack(controller);
+            }
+            else {
+                UpdatePunchAttack(controller);
+            }
+        }
+
+        /// <summary>
+        /// 空手/物品攻击（Activity 层，上半身）。空手 → punch_right/punch_left（parity 交替）；
+        /// 一般物品 → chop_attack（单次，JSON 按 IsHandsEmpty 路由，parity 翻转对 chop 无效被忽略）。
+        /// Activity 层 attack 别名 events 灌 MeleeImpact；MeleeImpact 事件（HandleAnimationEvent）调 miner.ExecuteHit。
         /// </summary>
         /// <remarks>
         /// 与 UpdateAttackedState 同构（锁/latch/层查）。锁语义=「attack 正在 Activity 层播放」，置锁靠检测层动画
@@ -773,16 +871,16 @@ namespace Game {
         /// comboMode=impact：Impact 态遇新 pending 立即重触发（parity 翻转下一手）；complete：等 MeleeAttackComplete。
         /// 重播：MeleeAttackComplete 置 m_attackJustCompleted，下帧强制 IsAttacking=false 让规则离开 attack（path 变），
         /// 下次 pending 重选 attack（path 变）触发重切重播（preservePose 保末态，path 不变会跳过重切→只播一次）。
-        /// glTF 攻击不 Poke（chop 留给 dig）；HitInterval 硬底线在 miner.Hit 入口不变。
+        /// glTF 攻击不 Poke（chop 留给 dig）；HitInterval 由 Update（持武器压 0.3）调控，硬底线仍在 miner.Hit 入口。
         /// </remarks>
-
-        void UpdateAttackState(AnimationController controller) {
+        void UpdatePunchAttack(AnimationController controller) {
             // attack 刚播完：强制 IsAttacking=false 一帧让规则选 null（path 变），Activity 停用；
             // 下次 pending（miner.IsPending(Attack)）时下帧重选 attack（path 变）触发重播。
             if (m_attackJustCompleted) {
                 m_attackJustCompleted = false;
                 m_attackState = AttackState.Idle;
                 controller.Parameters.SetBool("IsAttacking", false);
+                controller.Parameters.SetBool("IsSwordCombo", false);
                 controller.Parameters.SetFloat("AttackComboParity", m_attackParity);
                 return;
             }
@@ -841,8 +939,137 @@ namespace Game {
 
             bool isAttacking = m_attackState != AttackState.Idle || m_attackActive;
             controller.Parameters.SetBool("IsAttacking", isAttacking);
+            controller.Parameters.SetBool("IsSwordCombo", false);   // 非剑连击分支（punch/chop）：剑连击标志恒假
             controller.Parameters.SetFloat("AttackComboParity", m_attackParity);
         }
+
+        /// <summary>
+        /// 武器剑击三段连击（Base 层全身）。pending → Playing(stage 0=A)；impact 后窗口内 press 排队，
+        /// 当前段 SwordAttackComplete 后才进下段（需求：当前段结束后才开始下一段，非立即切）。
+        /// A/B 完后 0.12s grace 等 press 进下段或过期交还 idle；C（末段）无 grace，播完即 idle（或 queuedRestart 回 A 循环）。
+        /// 前冲 impulse 由 sword_a/sword_c 的 rootMotion AddImpulse + ImpulseSpeedOverride 一次性踢（API 已支持标量前冲字段）。
+        /// 启用资格（武器+非飞/非蹲/非水）由 UpdateAttackState 的 swordEligible 分派保证——本方法仅在合格时被调，
+        /// 故不验状态。不合格时改走 UpdatePunchAttack（Activity 上半身 chop）。IsSwordCombo=true 驱动 Base 剑规则 + Activity 静默。
+        /// Activity 层 [IsSwordCombo] 规则置 null（剑在 Base 全身播，上半身 overlay 静默）。
+        /// </summary>
+        void UpdateSwordAttack(AnimationController controller) {
+            bool pending = m_componentMiner != null && m_componentMiner.IsPending(ComponentMiner.PendingAction.Attack);
+
+            // 1. SwordAttackComplete latch（clip 到 endPhase）：决定进下段 / grace / idle / 回 A
+            if (m_swordJustCompleted) {
+                m_swordJustCompleted = false;
+                if (m_swordStage < 2) {
+                    // A/B 完成
+                    if (m_swordQueuedNext) {
+                        AdvanceSwordStage();                          // 窗口内已 press → 进下段
+                    }
+                    else {
+                        m_swordAttackState = SwordAttackState.Grace;  // 无 queue → grace 等 press 或过期
+                        m_swordGraceTimer = SwordGraceDuration;
+                    }
+                }
+                else {
+                    // C 完成（末段，无 grace）
+                    if (m_swordQueuedRestart) {
+                        m_swordStage = 0;                             // 期间 press → 回 A 循环（保持 Playing）
+                        m_swordQueuedRestart = false;
+                        m_swordQueuedNext = false;
+                        m_swordImpactReached = false;
+                    }
+                    else {
+                        ResetSwordLatches();                          // C 播完无重启 → 交还 idle
+                    }
+                }
+            }
+
+            // 2. grace 期处理（仅 A/B）：press → 立即进下段；过期 → idle
+            if (m_swordAttackState == SwordAttackState.Grace) {
+                if (pending) {
+                    AdvanceSwordStage();
+                    m_componentMiner?.ClearIsPending(ComponentMiner.PendingAction.Attack);
+                }
+                else {
+                    m_swordGraceTimer -= Time.FrameDuration;
+                    if (m_swordGraceTimer <= 0f) {
+                        ResetSwordLatches();
+                    }
+                }
+            }
+
+            // 3. impact 窗口内 press → 排队（不立即切；当前段播到 SwordAttackComplete 才 advance）。
+            //    AnyIsPending 在 ExecuteHit(impact) 清 Attack pending 后才放行下次 miner.Hit，故 impact 前的 press 不会到此。
+            if (m_swordAttackState == SwordAttackState.Playing && m_swordImpactReached && pending) {
+                if (m_swordStage < 2) {
+                    m_swordQueuedNext = true;
+                }
+                else {
+                    m_swordQueuedRestart = true;
+                }
+                m_componentMiner?.ClearIsPending(ComponentMiner.PendingAction.Attack);  // 消费 press（解除 AnyIsPending 排他锁，允许下次 press 注册）
+            }
+
+            // 4. 起手（Idle + pending → Playing A）。资格(武器+非飞/蹲/水)已由 UpdateAttackState 分派保证。
+            if (m_swordAttackState == SwordAttackState.Idle && pending) {
+                m_swordAttackState = SwordAttackState.Playing;
+                m_swordStage = 0;
+                m_swordImpactReached = false;
+                m_swordQueuedNext = false;
+                m_swordQueuedRestart = false;
+                // pending 不清——impact 时 ExecuteHit 清；IsAttacking/IsSwordCombo=true 让 Base 规则选 sword_a
+            }
+
+            // 5. 自愈：Playing 但 Base 已不在播剑（换手/被打断/异常），且非起手帧/非刚完成 → 重置防卡。
+            //    起手帧 Base 尚未切入（pending 仍真→!pending 门控放行）；完成后 latch 帧由 m_swordJustCompleted 门控。
+            if (m_swordAttackState == SwordAttackState.Playing
+                && !pending && !m_swordJustCompleted
+                && !BaseLayerIsPlayingSword(controller)) {
+                ResetSwordLatches();
+            }
+
+            // 写参数：IsAttacking = 序列活跃（Playing/Grace）；IsSwordCombo = 剑连击活跃（驱动 Base 剑规则 + Activity 静默）；
+            // AttackComboStage = 当前段（驱动 Base 剑规则选 A/B/C）
+            controller.Parameters.SetBool("IsAttacking", m_swordAttackState != SwordAttackState.Idle);
+            controller.Parameters.SetBool("IsSwordCombo", m_swordAttackState != SwordAttackState.Idle);
+            controller.Parameters.SetFloat("AttackComboStage", m_swordStage);
+        }
+
+        /// <summary>剑击进下一段：stage++，清排队/impact 标志，保持 Playing（IsAttacking 继续真，规则选下段 clip）。</summary>
+        void AdvanceSwordStage() {
+            m_swordStage++;
+            m_swordQueuedNext = false;
+            m_swordImpactReached = false;
+            m_swordAttackState = SwordAttackState.Playing;
+        }
+
+        /// <summary>重置全部剑击锁存到 Idle（stage=0）。分支切换/grace 过期/C 完成无重启/自愈/ResetActionLatches 调用。</summary>
+        void ResetSwordLatches() {
+            m_swordAttackState = SwordAttackState.Idle;
+            m_swordStage = 0;
+            m_swordImpactReached = false;
+            m_swordQueuedNext = false;
+            m_swordQueuedRestart = false;
+            m_swordJustCompleted = false;
+            m_swordGraceTimer = 0f;
+        }
+
+        /// <summary>剑连击启用条件：非飞行 + 非蹲 + 非水 + 非骑乘（武器由调用方 UpdateAttackState 验）。
+        /// 不查 IsOnGround——剑 a/c 前冲的向上 Y 分量会令本体瞬时 airborne，查 IsOnGround 会自杀中断连击。
+        /// 非骑乘门控：Base IsRiding 规则优先级高于剑规则，骑乘持剑攻击若误入剑分支会卡死（sword_a 被 ride 盖过不播→
+        /// MeleeImpact 不触发→pending 不清→IsSwordCombo 残留→Activity [IsSwordCombo]→null 静默上半身）。
+        /// 不满足时 UpdateAttackState 改走 UpdatePunchAttack（Activity 上半身 chop_attack TreeChopping_Loop）。</summary>
+        bool CanSwordCombo(AnimationController controller) {
+            var p = controller.Parameters;
+            return !p.GetBool("IsFlying")
+                && p.GetFloat("CrouchFactor") <= 0f
+                && !p.GetBool("IsInWater")
+                && !p.GetBool("IsRiding");
+        }
+
+        /// <summary>Base 层当前是否播任一剑击 source（A/B/C）。自愈判定用。</summary>
+        static bool BaseLayerIsPlayingSword(AnimationController controller)
+            => BaseLayerIsPlaying(controller, SwordASource)
+            || BaseLayerIsPlaying(controller, SwordBSource)
+            || BaseLayerIsPlaying(controller, SwordCSource);
 
         /// <summary>
         /// Dig 动作（cosmetic，Activity 层）：PokingPhase>0 判挖掘中。目标 草/花等植物 → dig_harvest（Farm_Harvest），
@@ -1338,6 +1565,11 @@ namespace Game {
                     m_attackComboMode = combo;
                     m_attackState = AttackState.Impact;
                     m_componentMiner?.ExecuteHit(mode);
+                    // 武器剑击：impact 点开启排队窗口（UpdateSwordAttack 步骤 3 据此接受窗口内 press 排队进下段）。
+                    // 空手/物品走 punch 状态机，不读此标志。
+                    if (controller.Parameters.GetBool("IsHoldingMeleeWeapon")) {
+                        m_swordImpactReached = true;
+                    }
                     break;
                 }
                 case "MeleeAttackComplete": {
@@ -1346,6 +1578,12 @@ namespace Game {
                     m_attackParity ^= 1;
                     m_attackActive = false;
                     m_attackJustCompleted = true;
+                    break;
+                }
+                case "SwordAttackComplete": {
+                    // 剑击某段 clip 播到 endPhase：置独立 latch，下帧 UpdateSwordAttack 消费（advance/grace/idle/restart）。
+                    // 不复用 punch 的 m_attackJustCompleted（两条完成路径独立，避免互相干扰）。
+                    m_swordJustCompleted = true;
                     break;
                 }
                 case "DigLoopComplete": {
@@ -1450,18 +1688,19 @@ namespace Game {
         /// 钳制 yaw/pitch 到 MaxHeadYaw/Pitch 防脖子转过头。
         /// </remarks>
         void UpdateHeadIK(AnimationController controller) {
-            // 停用条件：死亡 / 完全躺下(LieDownFactor>=1) / 攀爬 / dig_harvest / pickup / 随机待机舞 时 head 不追踪，放松回 clip 姿态。
+            // 停用条件：死亡 / 完全躺下(LieDownFactor>=1) / 攀爬 / dig_harvest / pickup / 随机待机舞 / 剑击 时 head 不追踪，放松回 clip 姿态。
             // LieDownFactor 用 <1（非 ==0）：起身过渡(0<v<1)身体已半起，IK 追踪正常；仅完全躺下(>=1)才停。
-            // dig_harvest/pickup/随机舞 clip 自带强 head 动作，IK weight=1 会覆盖 clip 的 head → 这些 clip 期间关 IK 让 clip head 显现。
+            // dig_harvest/pickup/随机舞/剑击 clip 自带强 head 动作，IK weight=1 会覆盖 clip 的 head → 这些 clip 期间关 IK 让 clip head 显现。
             // 参数由各 Update*State 先于本调用写入（SyncAnimationParameters 内顺序）；LieDownFactor 由 ComponentHumanModel 写入（先于本参与者）。
+            // m_swordAttackState 由 UpdateAttackState（L416，先于本调用）写入，Playing 态读当帧值。
             var p = controller.Parameters;
-            float lieDown = m_componentHumanModel.m_lieDownFactorModel;
             bool active = m_componentCreature.ComponentHealth.Health > 0f
-                && lieDown < 1f
+                && m_componentHumanModel.m_lieDownFactorModel < 1f
                 && m_jumpPhase != JumpPhaseClimbUp
                 && !m_pickupActive
                 && !(p.GetBool("IsDigging") && m_digPlantCached)
-                && !m_randomIdleActive;
+                && !m_randomIdleActive
+                && m_swordAttackState != SwordAttackState.Playing;
             if (!active || !m_headIKRegistered) {
                 controller.ClearIKTarget(HeadIKChain);
                 return;

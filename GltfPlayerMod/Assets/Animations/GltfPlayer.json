@@ -167,6 +167,61 @@
       ],
       "onComplete": { "type": "trigger", "name": "MeleeAttackComplete" }
     },
+    "sword_a": {
+      "source": "Sword_Regular_A",
+      "loop": false,
+      "preservePose": true,
+      "blendDuration": 0.1,
+      "events": [
+        { "time": 0.55, "name": "MeleeImpact", "data": "reraycast|complete" }
+      ],
+      "onComplete": { "type": "trigger", "name": "SwordAttackComplete" },
+      "rootMotion": {
+        "translation": {
+          "mode": "AddImpulse",
+          "impulseSpeedOverride": [0, 1.5, -4],
+          "impulsePhase": 0.02
+        }
+      }
+    },
+    "sword_b": {
+      "source": "Sword_Regular_B",
+      "loop": false,
+      "preservePose": true,
+      "blendDuration": 0.1,
+      "events": [
+        { "time": 0.45, "name": "MeleeImpact", "data": "reraycast|complete" }
+      ],
+      "onComplete": { "type": "trigger", "name": "SwordAttackComplete" }
+    },
+    "sword_c": {
+      "source": "Sword_Regular_C",
+      "loop": false,
+      "preservePose": true,
+      "blendDuration": 0.1,
+      "endPhase": 0.666,
+      "events": [
+        { "time": 0.333, "name": "MeleeImpact", "data": "reraycast|complete" }
+      ],
+      "onComplete": { "type": "trigger", "name": "SwordAttackComplete" },
+      "rootMotion": {
+        "translation": {
+          "mode": "AddImpulse",
+          "impulseSpeedOverride": [0, 3, -6],
+          "impulsePhase": 0.02
+        }
+      }
+    },
+    "chop_attack": {
+      "source": "TreeChopping_Loop",
+      "loop": false,
+      "preservePose": true,
+      "blendDuration": 0.15,
+      "events": [
+        { "time": 0.4, "name": "MeleeImpact", "data": "reraycast|complete" }
+      ],
+      "onComplete": { "type": "trigger", "name": "MeleeAttackComplete" }
+    },
     "ride_boat": {
       "source": "Meditate",
       "loop": true,
@@ -293,6 +348,18 @@
         {
           "condition": "[LieDownFactor] > 0",
           "animation": "sleep"
+        },
+        {
+          "condition": "[IsSwordCombo] && [AttackComboStage] == 0",
+          "animation": "sword_a"
+        },
+        {
+          "condition": "[IsSwordCombo] && [AttackComboStage] == 1",
+          "animation": "sword_b"
+        },
+        {
+          "condition": "[IsSwordCombo] && [AttackComboStage] == 2",
+          "animation": "sword_c"
         },
         {
           "condition": "[IsInWater]",
@@ -424,14 +491,16 @@
         { "condition": "[IsDigging]", "animation": "dig_general" },
         { "condition": "[IsAiming]", "animation": "aim_musket" },
         { "condition": "[IsThrowingUpperBody]", "animation": "throw_general" },
+        { "condition": "[IsSwordCombo]", "animation": null },
         {
-          "condition": "[IsAttacking] && [AttackComboParity] == 0",
+          "condition": "[IsAttacking] && [IsHandsEmpty] && [AttackComboParity] == 0",
           "animation": "punch_right"
         },
         {
-          "condition": "[IsAttacking] && [AttackComboParity] == 1",
+          "condition": "[IsAttacking] && [IsHandsEmpty] && [AttackComboParity] == 1",
           "animation": "punch_left"
         },
+        { "condition": "[IsAttacking]", "animation": "chop_attack" },
         {
           "condition": "true",
           "animation": null
@@ -511,6 +580,9 @@
     "IsAttacked": false,
     "IsAttacking": false,
     "AttackComboParity": 0.0,
+    "AttackComboStage": 0.0,
+    "IsSwordCombo": false,
+    "IsHandsEmpty": true,
     "MoveSpeed": 0.0,
     "WalkOrderX": 0.0,
     "WalkOrderY": 0.0,
