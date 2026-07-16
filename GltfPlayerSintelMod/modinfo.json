@@ -1,0 +1,17 @@
+{
+  "$schema": "https://gitee.com/SC-SPM/SurvivalcraftApi/raw/SCAPI1.9/Survivalcraft/Content/modinfo-scheme.json",
+  "Name": "glTF Player Sintel Mod - glTF 玩家 Sintel 模组",
+  "Version": "1.0.0",
+  "ApiVersion": "1.9.3",
+  "Description": "Replace the model of glTF Player Mod with Sintel. 将 glTF 玩家模组的模型替换为 Sintel。",
+  "ScVersion": "2.4.0.0",
+  "LoadOrder": 10000,
+  "NonPersistentMod": true,
+  "GameplayImpactLevel": "Cosmetic",
+  "Link": "https://github.com/XiaofengdiZhu/GltfPlayerMod",
+  "Author": "销锋镝铸 XiaofengdiZhu",
+  "PackageName": "xfdz.GltfPlayerSintelMod",
+  "Dependencies": {
+    "xfdz.GltfPlayerMod": "1.0.0"
+  }
+}
