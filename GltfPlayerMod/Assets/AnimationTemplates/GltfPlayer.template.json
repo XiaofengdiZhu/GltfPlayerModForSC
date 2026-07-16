@@ -8,19 +8,19 @@
         "Activity": {
             "index": 1,
             "blendMode": "Override",
-            "boneMask": [ "spine_01" ]
+            "boneMask": [ "mixamorigSpine" ]
         },
         "Ride": {
             "index": 2,
             "blendMode": "Override",
-            "boneMask": [ "pelvis" ],
-            "boneMaskExclude": [ "spine_01" ]
+            "boneMask": [ "mixamorigHips" ],
+            "boneMaskExclude": [ "mixamorigSpine" ]
         },
         "UpperBody": {
             "index": 3,
             "blendMode": "Override",
-            "boneMask": [ "spine_01" ],
-            "boneMaskExclude": [ "upperarm_l", "upperarm_r" ]
+            "boneMask": [ "mixamorigSpine" ],
+            "boneMaskExclude": [ "mixamorigLeftArm", "mixamorigRightArm" ]
         },
         "BodyTurn": {
             "index": 4,

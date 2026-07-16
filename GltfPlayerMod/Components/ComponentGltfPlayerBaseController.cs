@@ -1689,7 +1689,7 @@ namespace Game {
             if (m_headIKRegistered) {
                 return;
             }
-            IKChain chain = controller.RegisterAndBuildIKChain(HeadIKChain, "head", "SingleBoneIK", 2);
+            IKChain chain = controller.RegisterAndBuildIKChain(HeadIKChain, "mixamorigHead", "SingleBoneIK", 2);
             if (chain != null) {
                 chain.AimAxis = m_headAimAxis;
                 m_headIKRegistered = true;

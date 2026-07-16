@@ -1,0 +1,50 @@
+BackFlip
+Chest_Open
+ClimbUp_1m_RM
+Confused
+Consume
+Crawl
+Crouch_Fwd_Loop
+Crouch_Idle_Loop
+Dance Body Roll,
+Dance Charleston
+Dance Reach Hip
+Dance_Loop
+Death01
+Farm_Harvest
+Farm_Watering
+Idle Listening
+Idle_FoldArms_Loop
+Idle_Loop
+Interact
+Jump_Land
+Jump_Loop
+Jump_Start
+Jumping Jacks
+Kneeling Tired
+LayToIdle
+Levitate Entrance
+Levitate Idle
+Meditate
+OverhandThrow
+PickUp_Table
+Pistol_Aim_Up
+Pistol_Idle_Loop
+Pistol_Shoot
+Power Up
+Punch_Cross
+Punch_Jab
+Pushup
+Shivering
+Sleeping
+Sprint_Loop
+Swim_Fwd_Loop
+Swim_Idle_Loop
+Sword_Idle
+Sword_Regular_A
+Sword_Regular_B
+Sword_Regular_C
+TreeChopping_Loop
+Walk_Loop
+Yes
+Zombie_Idle_Loop

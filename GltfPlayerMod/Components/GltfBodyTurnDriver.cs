@@ -52,7 +52,7 @@ namespace Game.Animation.Drivers {
                 field = value;
                 m_cachedTargetBones = null;
             }
-        } = "pelvis";
+        } = "mixamorigHips";
 
         /// <summary>行走指令 X 分量参数名（侧向，LastWalkOrder.X，瞬时输入）</summary>
         public string WalkOrderXParam { get; set; } = "WalkOrderX";

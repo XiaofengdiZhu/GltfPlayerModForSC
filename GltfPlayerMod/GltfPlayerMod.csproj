@@ -35,18 +35,7 @@
         <Compile Include="GltfPlayerModLoader.cs" />
     </ItemGroup>
     <ItemGroup>
-        <Reference Include="Engine">
-            <HintPath>..\..\SurvivalcraftApi\Survivalcraft\bin\Debug\net10.0\Engine.dll</HintPath>
-            <Private>false</Private>
-        </Reference>
-        <Reference Include="EntitySystem">
-            <HintPath>..\..\SurvivalcraftApi\Survivalcraft\bin\Debug\net10.0\EntitySystem.dll</HintPath>
-            <Private>false</Private>
-        </Reference>
-        <Reference Include="Survivalcraft">
-            <HintPath>..\..\SurvivalcraftApi\Survivalcraft\bin\Debug\net10.0\Survivalcraft.dll</HintPath>
-            <Private>false</Private>
-        </Reference>
+        <PackageReference Include="SurvivalcraftAPI.Survivalcraft" Version="1.9.3" />
     </ItemGroup>
     <Target Name="PostBuild" AfterTargets="PostBuildEvent">
         <PropertyGroup>

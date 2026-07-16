@@ -72,6 +72,7 @@
       "source": "ClimbUp_1m_RM",
       "loop": false,
       "blendDuration": 0.1,
+      "endPhase": 0.8,
       "preservePose": true,
       "rootMotion": {
         "sourceBone": "root",
@@ -554,12 +555,12 @@
     }
   },
   "boneAliases": {
-    "Body": "spine_03",
-    "Head": "head",
-    "Hand1": "hand_l",
-    "Hand2": "hand_r",
-    "Leg1": "thigh_l",
-    "Leg2": "thigh_r"
+    "Body": "mixamorigSpine1",
+    "Head": "mixamorigHead",
+    "Hand1": "mixamorigLeftHand",
+    "Hand2": "mixamorigRightHand",
+    "Leg1": "mixamorigLeftUpLeg",
+    "Leg2": "mixamorigRightUpLeg"
   },
   "parameters": {
     "IsDead": false,
